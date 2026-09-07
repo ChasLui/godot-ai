@@ -155,9 +155,11 @@ def private_release_origin(
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             if not head_only:
-                self.wfile.write(payload)
+                # Record before writing: a client that has read the whole body
+                # may inspect the record before this thread returns from write.
                 if self.path != RELEASE_PATH:
                     downloads.append(name)
+                self.wfile.write(payload)
 
     class ConnectHandler(QuietHandler):
         def do_CONNECT(self):

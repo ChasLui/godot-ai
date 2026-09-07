@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -202,6 +203,38 @@ def test_runtime_project_driver_is_external_to_candidate_tree(tmp_path):
     assert 'const VERSION_A := "4.0.0"' in driver
     assert 'const VERSION_B := "4.0.1"' in driver
     assert 'plugin.call("_on_dock_update_requested")' in driver
+    # The update restarts the editor; the driver must resume as "started" there.
+    assert driver.index("FileAccess.file_exists(PROGRESS_PATH)") < driver.index("set_process(true)")
+    assert driver.index('{"started": true') < driver.index(
+        'plugin.call("_on_dock_update_requested")'
+    )
+
+
+def test_editor_launch_keeps_the_restarted_editor_headless(tmp_path):
+    command = runtime._editor_command("godot", tmp_path / "project")
+    assert "--headless" not in command
+    assert command[1:5] == ["--display-driver", "headless", "--audio-driver", "Dummy"]
+    assert command[-3:] == ["--editor", "--path", str(tmp_path / "project")]
+
+
+def test_runtime_result_is_read_as_the_driver_writes_it(tmp_path):
+    # GDScript's JSON.stringify keeps insertion order and spacing; the driver's
+    # report is a plain object, not canonical signed evidence.
+    (tmp_path / "runtime-result.json").write_text(
+        '{"status": "passed", "to_version": "4.0.1", "from_version": "4.0.0"}', encoding="utf-8"
+    )
+    assert runtime._read_runtime_result(tmp_path)["status"] == "passed"
+    (tmp_path / "runtime-result.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(support.ReleaseError, match="not an object"):
+        runtime._read_runtime_result(tmp_path)
+
+
+def test_runtime_result_wait_needs_the_restarted_editor_to_report(tmp_path):
+    result = tmp_path / "runtime-result.json"
+    with pytest.raises(support.ReleaseError, match="restarted editor did not report"):
+        runtime._wait_for_runtime_result(result, 0.3)
+    result.write_text("{}", encoding="utf-8")
+    runtime._wait_for_runtime_result(result, 0.3)
 
 
 def test_private_capability_is_never_written_to_retained_log(tmp_path):
@@ -213,15 +246,16 @@ def test_private_capability_is_never_written_to_retained_log(tmp_path):
     )
 
 
-def test_private_capability_scan_covers_nested_retained_files(tmp_path):
-    nested = tmp_path / "nested"
-    nested.mkdir()
+@pytest.mark.parametrize("relative", ["nested", "addons/.godot_ai_update/backup/4.0.0"])
+def test_private_capability_scan_covers_nested_retained_files(tmp_path, relative):
+    nested = tmp_path / relative
+    nested.mkdir(parents=True)
     (nested / "clean.bin").write_bytes(b"ordinary retained evidence")
     runtime._require_values_absent(tmp_path, ("private-token",))
     (nested / "leak.bin").write_bytes(b"prefix private-token suffix")
     with pytest.raises(support.ReleaseError) as caught:
         runtime._require_values_absent(tmp_path, ("private-token",))
-    assert f"persisted in {Path('nested') / 'leak.bin'}" in str(caught.value)
+    assert f"persisted in {Path(relative) / 'leak.bin'}" in str(caught.value)
 
 
 def test_private_index_path_capability_can_be_scanned_independently():
@@ -472,3 +506,169 @@ def test_lean_update_evidence_rejects_every_leftover_or_mismatch(
 
     with pytest.raises(support.ReleaseError, match=message):
         runtime._verify_lean_update(project, candidates, records)
+
+
+def test_cli_accepts_every_engine_a_required_runtime_row_names(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(runtime, "runtime_row", lambda *args: seen.append(args[3]))
+    versions = sorted({key[3] for key in qualification.required_row_keys() if key[0] == "runtime"})
+    assert versions == ["4.7.0", "4.7.2"]
+    assert set(versions) <= set(qualification.RUNTIME_GODOT_VERSIONS)
+    for version in versions:
+        argv = [
+            "--candidates",
+            str(tmp_path),
+            "--python-row",
+            str(tmp_path),
+            "--godot",
+            "godot",
+            "--godot-version",
+            version,
+            "--output",
+            str(tmp_path / "row"),
+            "--os",
+            "ubuntu-latest",
+        ]
+        assert runtime.main(argv) == 0
+    assert seen == versions
+    with pytest.raises(SystemExit):
+        runtime.main([*argv[:-4], "--godot-version", "4.7.1", *argv[-4:]])
+
+
+def test_isolated_environment_never_overrides_the_capability_dir_on_windows(monkeypatch, tmp_path):
+    # godot_ai.transport.capability refuses GODOT_AI_CAPABILITY_DIR on Windows,
+    # so the row's own server would exit before publishing capabilities.
+    monkeypatch.setattr(runtime.os, "name", "nt")
+    environment = runtime._isolated_environment(tmp_path / "environment", "http://127.0.0.1:1/")
+    assert "GODOT_AI_CAPABILITY_DIR" not in environment
+    assert environment["LOCALAPPDATA"] == str(tmp_path / "environment" / "local-app-data")
+    monkeypatch.setattr(runtime.os, "name", "posix")
+    environment = runtime._isolated_environment(tmp_path / "posix", "http://127.0.0.1:1/")
+    assert environment["GODOT_AI_CAPABILITY_DIR"] == str(tmp_path / "posix" / "capabilities")
+
+
+def test_runtime_row_accepts_the_extra_engine_row(monkeypatch, tmp_path):
+    candidates = tmp_path / "candidates"
+    python_row = tmp_path / "python-row"
+    (python_row / "packages").mkdir(parents=True)
+    bindings = _stub_candidate_validation(monkeypatch, candidates)
+    monkeypatch.setattr(runtime, "current_python_version", lambda: "3.11")
+    monkeypatch.setattr(runtime.qualification, "dependency_inventory", lambda root: [])
+    (python_row / "row.json").write_bytes(
+        support.canonical(
+            {
+                "kind": "python",
+                "status": "passed",
+                "os": "ubuntu-latest",
+                "python": "3.11",
+                "candidates": bindings,
+                "dependencies": [],
+            }
+        )
+    )
+    monkeypatch.setattr(runtime.engine, "host_row", lambda: "ubuntu-latest")
+
+    def run_case(*args):
+        args[-1].mkdir()
+        return {"status": "passed"}
+
+    monkeypatch.setattr(runtime, "exact_a_to_b", run_case)
+    output = tmp_path / "output"
+    runtime.runtime_row(candidates, python_row, "godot", "4.7.2", output, "ubuntu-latest")
+    assert support.read_json(output / "row.json")["godot_version"] == "4.7.2"
+
+
+def test_capability_release_waits_for_a_lock_the_backend_still_holds(monkeypatch, tmp_path):
+    (tmp_path / "http-8000.lock").write_text("", encoding="utf-8")
+    checks = []
+    monkeypatch.setattr(
+        runtime, "_lock_released", lambda lock: checks.append(lock.name) or len(checks) >= 3
+    )
+    sleeps = []
+    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: sleeps.append(seconds))
+    runtime._wait_for_capability_release(tmp_path, timeout=5.0)
+    assert checks == ["http-8000.lock"] * 3
+    assert sleeps and all(0 < s <= 0.5 for s in sleeps)
+
+    checks.clear()
+    monkeypatch.setattr(runtime, "_lock_released", lambda lock: False)
+    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: None)
+    with pytest.raises(support.ReleaseError, match="still holds http-8000.lock"):
+        runtime._wait_for_capability_release(tmp_path, timeout=0.2)
+    # No directory or no locks: nothing to wait for.
+    runtime._wait_for_capability_release(tmp_path / "missing", timeout=0.1)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX advisory locks")
+def test_lock_released_takes_the_posix_flock_as_proof(tmp_path):
+    import fcntl
+
+    lock = tmp_path / "http-8000.lock"
+    lock.write_text("", encoding="utf-8")
+    with lock.open("rb") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        assert runtime._lock_released(lock) is False, "a held flock is not released"
+        assert lock.exists(), "the file must not be deleted while held"
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+    assert runtime._lock_released(lock) is True
+    assert not lock.exists()
+    assert runtime._lock_released(lock) is True, "a missing lock counts as released"
+
+
+def test_lock_released_on_windows_is_a_successful_delete(monkeypatch, tmp_path):
+    lock = tmp_path / "http-8000.lock"
+    lock.write_text("", encoding="utf-8")
+    monkeypatch.setattr(runtime.os, "name", "nt")
+    held = lambda self, *a, **k: (_ for _ in ()).throw(PermissionError(32, "held"))  # noqa: E731
+    monkeypatch.setattr(Path, "unlink", held)
+    assert runtime._lock_released(lock) is False
+    monkeypatch.undo()
+    monkeypatch.setattr(runtime.os, "name", "nt")
+    assert runtime._lock_released(lock) is True
+    assert runtime._lock_released(lock) is True, "already gone"
+
+
+def test_scrub_private_material_removes_key_and_capabilities_or_fails(monkeypatch, tmp_path):
+    key = tmp_path / "private-key.pem"
+    key.write_text("secret", encoding="utf-8")
+    capabilities = tmp_path / "capabilities"
+    capabilities.mkdir()
+    (capabilities / "http-8000.json").write_text("{}", encoding="utf-8")
+    runtime._scrub_private_material(key, capabilities, tmp_path / "absent")
+    assert not key.exists() and not capabilities.exists()
+
+    capabilities.mkdir()
+    monkeypatch.setattr(
+        runtime.shutil, "rmtree", lambda path: (_ for _ in ()).throw(OSError(32, "held"))
+    )
+    with pytest.raises(support.ReleaseError, match="could not remove private material"):
+        runtime._scrub_private_material(capabilities)
+
+
+def test_capability_directory_follows_the_isolated_environment(monkeypatch, tmp_path):
+    # Build both environments under a patched os.name, then restore it before
+    # anything constructs a Path: pathlib picks its flavour from os.name, and a
+    # mismatch raises on the host (and crashes pytest's failure reporting).
+    original = runtime.os.name
+    try:
+        monkeypatch.setattr(runtime.os, "name", "nt")
+        windows = runtime._isolated_environment(tmp_path / "win", "http://127.0.0.1:1/")
+        monkeypatch.setattr(runtime.os, "name", "posix")
+        posix = runtime._isolated_environment(tmp_path / "posix", "http://127.0.0.1:1/")
+    finally:
+        monkeypatch.setattr(runtime.os, "name", original)
+    assert runtime._capability_directory(windows) == (
+        tmp_path / "win" / "local-app-data" / "godot-ai" / "capabilities"
+    )
+    assert runtime._capability_directory(posix) == tmp_path / "posix" / "capabilities"
+
+
+def test_ports_free_wait_reports_elapsed_and_refuses_a_lingering_backend(monkeypatch):
+    answers = iter([False, False, True])
+    monkeypatch.setattr(runtime, "_free_port", lambda port: next(answers))
+    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: None)
+    assert runtime._wait_for_ports_free(8000, timeout=5.0) >= 0.0
+    monkeypatch.setattr(runtime, "_free_port", lambda port: False)
+    with pytest.raises(support.ReleaseError, match="remained live after editor exit"):
+        runtime._wait_for_ports_free(8000, 9500, timeout=0.2)
+    assert runtime.EDITOR_EXIT_TIMEOUT_SECONDS >= 60.0

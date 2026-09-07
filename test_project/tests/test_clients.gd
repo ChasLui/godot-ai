@@ -6348,3 +6348,79 @@ func test_text_remove_server_entry_bom_no_match_returns_unchanged() -> void:
 	var body := "﻿" + '{"mcpServers": {"other": {"command": "x"}}}'
 	var updated: String = helper._text_remove_server_entry(body, PackedStringArray(["mcpServers"]), McpClientConfigurator.SERVER_NAME)
 	assert_eq(updated, body, "no-op must leave file byte-for-byte identical; got: %s" % updated)
+
+
+# ----- post-update migration ownership -----
+
+
+func test_launch_mentions_godot_ai_recognizes_our_launch_shapes_only() -> void:
+	assert_true(McpClient.launch_mentions_godot_ai("uvx --from godot-ai==3.2.4 godot-ai"))
+	assert_true(McpClient.launch_mentions_godot_ai("/x/bin/godot-ai attach"))
+	assert_true(McpClient.launch_mentions_godot_ai("C:\\Tools\\godot-ai.exe attach"))
+	assert_true(McpClient.launch_mentions_godot_ai("python -m godot_ai"))
+	assert_true(McpClient.launch_mentions_godot_ai("uvx godot-ai==4.0.0"))
+	assert_false(McpClient.launch_mentions_godot_ai("/usr/bin/python3 my_server.py"))
+	## Mentions that are not launches: a docs URL, a project directory, a name.
+	assert_false(McpClient.launch_mentions_godot_ai("node server.js https://example.com/godot-ai/docs"))
+	assert_false(McpClient.launch_mentions_godot_ai("/home/me/projects/godot-ai/run.sh"))
+	assert_false(McpClient.launch_mentions_godot_ai("my-godot-ai-proxy --port 1"))
+	assert_false(McpClient.launch_mentions_godot_ai("godot-ai-helper"))
+	assert_false(McpClient.launch_mentions_godot_ai(""))
+	## Structured values: a path with spaces stays whole; a URI is never an executable.
+	assert_true(McpClient.launch_values_mention_godot_ai(
+		PackedStringArray(["C:\\Program Files\\Godot AI\\godot-ai.exe", "attach"])
+	))
+	assert_true(McpClient.launch_values_mention_godot_ai(PackedStringArray(["/opt/godot ai/bin/godot-ai"])))
+	assert_false(McpClient.launch_values_mention_godot_ai(PackedStringArray(["https://example.com/godot-ai"])))
+	assert_false(McpClient.launch_values_mention_godot_ai(PackedStringArray(["curl", "http://x/godot-ai/"])))
+	assert_false(McpClient.launch_mentions_godot_ai("node https://example.com/godot-ai"))
+
+
+func test_json_mismatch_reports_whether_the_existing_entry_is_ours() -> void:
+	## The post-update major migration rewrites a mismatched entry only when it
+	## launches Godot AI; a foreign command under our name must read as not owned.
+	var client := McpClient.new()
+	client.id = "ownership_test"
+	client.display_name = "Ownership Test"
+	client.config_type = "json"
+	client.server_key_path = PackedStringArray(["mcpServers"])
+	client.command_shape = McpClient.CommandShape.FLAT
+	var launch := {"ok": true, "command": "/x/bin/uvx", "args": ["--from", "godot-ai==4.0.0", "godot-ai", "attach"]}
+	var foreign := McpJsonStrategy._entry_status_details(
+		client, {"command": "/usr/bin/python3", "args": ["my_server.py"]}, "http://x", launch
+	)
+	assert_eq(int(foreign.get("status", -1)), McpClient.Status.CONFIGURED_MISMATCH)
+	assert_false(bool(foreign.get("owned", true)), "a foreign command is not ours to rewrite")
+	var stale := McpJsonStrategy._entry_status_details(
+		client, {"command": "/x/bin/uvx", "args": ["--from", "godot-ai==3.2.4", "godot-ai", "attach"]}, "http://x", launch
+	)
+	assert_eq(int(stale.get("status", -1)), McpClient.Status.CONFIGURED_MISMATCH)
+	assert_true(bool(stale.get("owned", false)), "a stale Godot AI pin is ours to repin")
+	var current := McpJsonStrategy._entry_status_details(
+		client, {"command": "/x/bin/uvx", "args": launch["args"]}, "http://x", launch
+	)
+	assert_eq(int(current.get("status", -1)), McpClient.Status.CONFIGURED)
+	## Our own name inside the entry (or as its key) must never count as a launch.
+	var named := McpJsonStrategy._entry_status_details(
+		client, {"name": "godot-ai", "command": "/usr/bin/python3", "args": ["srv.py"]}, "http://x", launch
+	)
+	assert_false(bool(named.get("owned", true)), "the entry name is not a launch")
+	assert_eq(
+		McpClient.entry_launch_values({"name": "godot-ai", "command": "x", "args": ["a", 1]}),
+		PackedStringArray(["x", "a", "1"]),
+	)
+	var url_entry := McpJsonStrategy._entry_status_details(
+		client, {"command": "node", "args": ["https://example.com/godot-ai"]}, "http://x", launch
+	)
+	assert_false(bool(url_entry.get("owned", true)), "a URL ending in our name is not a launch")
+	var spaced := McpJsonStrategy._entry_status_details(
+		client, {"command": "C:\\Program Files\\Godot AI\\godot-ai.exe", "args": ["attach"]}, "http://x", launch
+	)
+	assert_true(bool(spaced.get("owned", false)), "a Windows path with spaces is ours")
+	var docs_link := McpJsonStrategy._entry_status_details(
+		client,
+		{"command": "node", "args": ["server.js", "https://example.com/godot-ai/docs"]},
+		"http://x",
+		launch,
+	)
+	assert_false(bool(docs_link.get("owned", true)), "a URL containing our name is not a launch")

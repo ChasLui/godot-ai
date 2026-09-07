@@ -216,10 +216,13 @@ func resume_after_quiesce() -> void:
 func begin_post_update_repin(
 	from_version: String, to_version: String, replace_owned_mismatches: bool = false
 ) -> Dictionary:
+	## `from_version` is empty when the closed-editor installer put v4 into a
+	## project that had no add-on: nothing was replaced, and owned client
+	## entries still repin to the installed version on this first start.
 	var replaced := from_version.strip_edges()
 	var installed := to_version.strip_edges()
-	if replaced.is_empty() or installed.is_empty():
-		return {"ok": false, "error": "Post-update versions are incomplete."}
+	if installed.is_empty():
+		return {"ok": false, "error": "Post-update target version is missing."}
 	if installed != ClientConfigurator.get_plugin_version():
 		return {"ok": false, "error": "Post-update target does not match the loaded plugin."}
 	if MutationLock.is_locked():
@@ -284,6 +287,7 @@ func _run_post_update_repin(
 	)
 	var configured_ids: Array[String] = []
 	var repinned_ids: Array[String] = []
+	var foreign_ids: Array[String] = []
 	if bool(prewarm.get("termination_failed", false)):
 		return _post_update_result(
 			false,
@@ -317,11 +321,15 @@ func _run_post_update_repin(
 		if status == Client.Status.CONFIGURED:
 			configured_ids.append(client_id)
 			continue
-		if (
-			not replace_owned_mismatches
-			and not ClientConfigurator.entry_drift_is_version_pin_only(
-				client_id, from_version, context
-			)
+		if replace_owned_mismatches:
+			## A major migration rewrites only entries that launch Godot AI.
+			## An entry under our name that starts something else is the
+			## user's own server: leave it, name it, let Configure replace it.
+			if not bool(details.get("owned", false)):
+				foreign_ids.append(client_id)
+				continue
+		elif not ClientConfigurator.entry_drift_is_version_pin_only(
+			client_id, from_version, context
 		):
 			return _post_update_result(false, generation, configured_ids, repinned_ids,
 				"%s has non-version configuration drift; automatic migration refused." % client_id, prewarm)
@@ -346,7 +354,10 @@ func _run_post_update_repin(
 		repinned_ids.append(client_id)
 	configured_ids.sort()
 	repinned_ids.sort()
-	return _post_update_result(true, generation, configured_ids, repinned_ids, "", prewarm)
+	foreign_ids.sort()
+	return _post_update_result(
+		true, generation, configured_ids, repinned_ids, "", prewarm, false, "", foreign_ids
+	)
 
 
 static func _post_update_result(
@@ -358,6 +369,7 @@ static func _post_update_result(
 	prewarm: Dictionary,
 	termination_failed: bool = false,
 	unsafe_client_id: String = "",
+	foreign_ids: Array[String] = [],
 ) -> Dictionary:
 	return {
 		"ok": ok,
@@ -368,6 +380,8 @@ static func _post_update_result(
 		"prewarm": prewarm.duplicate(true),
 		"termination_failed": termination_failed,
 		"unsafe_client_id": unsafe_client_id,
+		## Entries under our name that launch something else; left unchanged.
+		"foreign_ids": foreign_ids.duplicate(),
 	}
 
 

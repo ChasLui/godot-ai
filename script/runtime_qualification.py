@@ -37,6 +37,10 @@ MANIFEST_NAME = "release/godot-ai-v4-plugin.manifest.json"
 # The lean updater keeps its marker, lock and retained backup beside the live
 # tree; nothing of it lives outside the project (docs/self-update.md).
 UPDATE_STATE = "addons/.godot_ai_update"
+# EditorInterface.restart_editor forwards explicit display/audio driver options
+# but not the --headless shorthand (Godot 4.7). The update restarts the editor,
+# and the restarted editor must stay headless on a display-less runner.
+HEADLESS_EDITOR_ARGUMENTS = ("--display-driver", "headless", "--audio-driver", "Dummy")
 
 
 def current_python_version() -> str:
@@ -66,11 +70,106 @@ def _free_port(port: int) -> bool:
     return True
 
 
-def _wait_for_ports_free(*ports: int, timeout: float = 15.0) -> None:
+def _editor_command(executable: str | Path, project: Path) -> list[str]:
+    return [str(executable), *HEADLESS_EDITOR_ARGUMENTS, "--editor", "--path", str(project)]
+
+
+def _read_runtime_result(project: Path) -> dict[str, Any]:
+    """The driver writes its report with GDScript's JSON.stringify, not canonically."""
+    result = support.read_json(project / "runtime-result.json", canonical_required=False)
+    support.require(type(result) is dict, "runtime driver result is not an object")
+    return result
+
+
+def _wait_for_runtime_result(path: Path, timeout: float) -> None:
     deadline = time.monotonic() + timeout
+    while not path.is_file():
+        support.require(time.monotonic() < deadline, "the restarted editor did not report a result")
+        time.sleep(0.5)
+
+
+def _capability_directory(environment: dict[str, str]) -> Path:
+    """Where the row's backend publishes capabilities (see _isolated_environment)."""
+    override = environment.get("GODOT_AI_CAPABILITY_DIR", "")
+    if override:
+        return Path(override)
+    return Path(environment["LOCALAPPDATA"]) / "godot-ai" / "capabilities"
+
+
+def _wait_for_capability_release(directory: Path, timeout: float = 30.0) -> None:
+    """A stopped backend releases its capability lock a moment after its ports.
+
+    A lock still held past the deadline means a backend outlived the editor.
+    """
+    deadline = time.monotonic() + timeout
+    for lock in sorted(directory.glob("*.lock")) if directory.is_dir() else []:
+        while not _lock_released(lock):
+            remaining = deadline - time.monotonic()
+            support.require(
+                remaining > 0, f"candidate backend still holds {lock.name} after editor exit"
+            )
+            time.sleep(min(0.5, remaining))
+
+
+def _lock_released(lock: Path) -> bool:
+    """Whether no process holds the backend's port-claim lock any more.
+
+    Windows refuses to delete a file another process holds open, so a
+    successful delete is the proof there. On POSIX the backend holds an
+    advisory flock and deleting the file says nothing, so the proof is taking
+    that lock ourselves; the file is removed once we hold it.
+    """
+    if os.name == "nt":
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        with lock.open("rb") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return False
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except FileNotFoundError:
+        return True
+    lock.unlink(missing_ok=True)
+    return True
+
+
+def _scrub_private_material(*paths: Path) -> None:
+    """Remove the row's private key and capability records before the
+    best-effort temp cleanup, so a cleanup failure can never retain them."""
+    for path in paths:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        except OSError as error:
+            raise support.ReleaseError(f"could not remove private material {path}: {error}")
+        support.require(not path.exists(), f"private material remains at {path}")
+
+
+# The restarted editor writes its result, then quits; its teardown kills the
+# backend tree, and on a loaded Windows runner the whole exit has taken longer
+# than 15 s (qualification run 34079902982) while run 34077763471 cleared it.
+# A backend that never lets go is still refused, just later.
+EDITOR_EXIT_TIMEOUT_SECONDS = 120.0
+
+
+def _wait_for_ports_free(*ports: int, timeout: float = 15.0) -> float:
+    """Seconds until every port was free; refuses when the backend stays up."""
+    started = time.monotonic()
+    deadline = started + timeout
     while time.monotonic() < deadline:
         if all(_free_port(port) for port in ports):
-            return
+            return time.monotonic() - started
         time.sleep(0.1)
     raise support.ReleaseError("candidate backend remained live after editor exit")
 
@@ -132,7 +231,9 @@ def _isolated_environment(root: Path, index: str) -> dict[str, str]:
             "XDG_CONFIG_HOME": str(config),
             "XDG_DATA_HOME": str(data),
             "XDG_CACHE_HOME": str(cache),
-            "GODOT_AI_CAPABILITY_DIR": str(capabilities),
+            # The server refuses this override on Windows; there the isolated
+            # LOCALAPPDATA below already relocates the capability directory.
+            **({} if os.name == "nt" else {"GODOT_AI_CAPABILITY_DIR": str(capabilities)}),
             "GODOT_AI_DISABLE_TELEMETRY": "true",
             "GODOT_AI_ALLOW_HEADLESS": "1",
             "GODOT_AI_MODE": "user",
@@ -244,6 +345,8 @@ extends Node
 const VERSION_A := "@VERSION_A@"
 const VERSION_B := "@VERSION_B@"
 const DEADLINE_MS := 300000
+## The update restarts the editor; the restarted driver resumes from here.
+const PROGRESS_PATH := "res://runtime-progress.json"
 var deadline := 0
 var started := false
 var old_instance := ""
@@ -255,6 +358,11 @@ func _ready() -> void:
     if OS.get_environment("GODOT_AI_RUNTIME_QUALIFICATION_PARSE_ONLY") == "1":
         get_tree().quit(0)
         return
+    if FileAccess.file_exists(PROGRESS_PATH):
+        var progress: Variant = JSON.parse_string(FileAccess.get_file_as_string(PROGRESS_PATH))
+        if progress is Dictionary:
+            started = bool(progress.get("started", false))
+            old_instance = str(progress.get("old_instance", ""))
     deadline = Time.get_ticks_msec() + DEADLINE_MS
     set_process(true)
 
@@ -275,6 +383,12 @@ func _process(_delta: float) -> void:
             _finish(42, {"error": "candidate A client pin missing"})
             return
         started = true
+        var progress := FileAccess.open(PROGRESS_PATH, FileAccess.WRITE)
+        if progress == null:
+            _finish(43, {"error": "cannot record qualification progress"})
+            return
+        progress.store_string(JSON.stringify({"started": true, "old_instance": old_instance}))
+        progress.close()
         plugin.call("_on_dock_update_requested")
         return
     var config := ConfigFile.new()
@@ -528,7 +642,13 @@ def exact_a_to_b(
     actual_godot_version = _validate_godot_version(str(executable), godot_version)
     support.require(_free_port(HTTP_PORT) and _free_port(WS_PORT), "qualification ports are busy")
     output.mkdir(parents=True)
-    with tempfile.TemporaryDirectory(prefix="godot-ai-exact-runtime-") as temporary:
+    # A backend that has just been stopped can still hold its capability lock
+    # for a moment; the row waits for that release and removes every private
+    # file itself, so this best-effort cleanup can only ever leave public
+    # scratch (retained wheels, the project) behind on a runner.
+    with tempfile.TemporaryDirectory(
+        prefix="godot-ai-exact-runtime-", ignore_cleanup_errors=True
+    ) as temporary:
         work = Path(temporary).resolve()
         project = work / "project"
         project.mkdir()
@@ -540,6 +660,7 @@ def exact_a_to_b(
             uvx = shutil.which("uvx", path=environment.get("PATH"))
             support.require(uvx is not None, "uvx is required for runtime qualification")
             _write_client_pin(Path(environment["CODEX_HOME"]), uvx, records["a"]["version"])
+            print("Installing signed candidate A in the disposable project", flush=True)
             command = [
                 sys.executable,
                 str(support.ROOT / "script/v4-release"),
@@ -585,8 +706,9 @@ def exact_a_to_b(
                         "PRIVATE_HTTPS_CERTIFICATE": str(certificate),
                     }
                 )
+                print(f"Running the A-to-B update in Godot {godot_version}", flush=True)
                 completed = subprocess.run(
-                    [str(executable), "--headless", "--editor", "--path", str(project)],
+                    _editor_command(executable, project),
                     cwd=work,
                     env=environment,
                     capture_output=True,
@@ -599,6 +721,10 @@ def exact_a_to_b(
                     (release.token, index),
                 )
                 support.require(completed.returncode == 0, "real Godot A-to-B update failed")
+                # The swap restarts the editor; the process above exits and
+                # the restarted editor finishes the case and writes the result.
+                print("Waiting for the restarted editor to report candidate B", flush=True)
+                _wait_for_runtime_result(project / "runtime-result.json", TIMEOUT_SECONDS)
                 support.require(
                     release.downloads
                     == [
@@ -608,13 +734,17 @@ def exact_a_to_b(
                     ],
                     "update did not download exactly B's canonical signed triple",
                 )
-            _wait_for_ports_free(HTTP_PORT, WS_PORT)
-        result = support.read_json(project / "runtime-result.json")
+            released = _wait_for_ports_free(HTTP_PORT, WS_PORT, timeout=EDITOR_EXIT_TIMEOUT_SECONDS)
+            print(f"backend released its ports {released:.1f}s after the editor's result")
+            capability_dir = _capability_directory(environment)
+            _wait_for_capability_release(capability_dir)
+            _scrub_private_material(key, capability_dir)
+        print("Verifying update evidence and private-data cleanup", flush=True)
+        result = _read_runtime_result(project)
         support.require(result.get("status") == "passed", "runtime driver did not pass")
         live = project / "addons/godot_ai"
-        support.require(
-            support.inventory(live) == _manifest_tree(candidates / "b"), "live tree is not exact B"
-        )
+        live_tree = support.inventory(live)
+        support.require(live_tree == _manifest_tree(candidates / "b"), "live tree is not exact B")
         config = Path(environment["CODEX_HOME"]) / "config.toml"
         text = config.read_text(encoding="utf-8")
         support.require(
@@ -627,7 +757,6 @@ def exact_a_to_b(
         update = _verify_lean_update(project, candidates, records)
         private_values = (release.token, index, _private_index_capability(index), ORIGIN)
         _require_values_absent(project, private_values)
-        _require_values_absent(project / UPDATE_STATE, private_values)
         _require_values_absent(output, private_values)
         return {
             **result,
@@ -637,7 +766,7 @@ def exact_a_to_b(
                 "version": actual_godot_version,
             },
             "index_artifacts_requested": sorted(set(index_requests)),
-            "live_tree": support.inventory(live),
+            "live_tree": live_tree,
             "backend_stopped": True,
             **update,
         }
@@ -655,7 +784,9 @@ def runtime_row(
     support.require(os_label == engine.host_row(), "runtime row differs from actual host")
     python_version = current_python_version()
     support.require(python_version in {"3.11", "3.14"}, "unsupported runtime Python row")
-    support.require(godot_version in qualification.GODOT_BUILDS, "unsupported runtime Godot row")
+    support.require(
+        godot_version in qualification.RUNTIME_GODOT_VERSIONS, "unsupported runtime Godot row"
+    )
     support.require(not output.exists(), "qualification output already exists")
     records = {name: support.verify_candidate(candidates / name, name) for name in ("a", "b")}
     source_row = support.read_json(python_row / "row.json")
@@ -710,7 +841,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidates", type=Path, required=True)
     parser.add_argument("--python-row", type=Path, required=True)
     parser.add_argument("--godot", default=os.environ.get("GODOT_BIN", "godot"))
-    parser.add_argument("--godot-version", choices=qualification.GODOT_BUILDS, required=True)
+    parser.add_argument(
+        "--godot-version", choices=qualification.RUNTIME_GODOT_VERSIONS, required=True
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--os", choices=support.PLATFORMS, required=True)
     args = parser.parse_args(argv)

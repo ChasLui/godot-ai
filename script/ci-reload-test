@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Smoke-test the editor_reload_plugin tool in CI.
+# Use --stress for ten reloads followed by the full handler suite (nightly).
 # 1. Creates a node (cube) via the OLD plugin
 # 2. Reloads the plugin, verifies new session ID
 # 3. Checks the log buffer is fresh (proves handlers were rebuilt)
@@ -8,6 +9,16 @@
 # Expects: Python server reachable at $MCP_SERVER_URL (default :8000, set in
 # _ci_env.sh), Godot editor with plugin connected.
 set -euo pipefail
+STRESS=0
+case "${1:-}" in
+  "") ;;
+  --stress) STRESS=1; shift ;;
+  *) echo "Usage: $0 [--stress]" >&2; exit 2 ;;
+esac
+if [ "$#" -ne 0 ]; then
+  echo "Usage: $0 [--stress]" >&2
+  exit 2
+fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/_ci_env.sh"
@@ -341,6 +352,13 @@ if total < 0:
     sys.exit(1)
 print(f'Game-logs path OK: total={total}, returned={content.get(\"returned_count\", 0)}')
 "
+
+# Normal CI already ran the full handler suite. The probes above prove a
+# single reload preserves the scene and rebuilds a working plugin session.
+if [ "$STRESS" -eq 0 ]; then
+  echo "Reload smoke test passed (1 reload)"
+  exit 0
+fi
 
 # --- Step 7: Multi-reload churn (cumulative corruption regression) ---
 # The original issue report saw crashes after ~10 reloads. Do 9 more

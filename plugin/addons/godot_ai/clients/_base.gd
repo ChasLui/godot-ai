@@ -531,3 +531,48 @@ static func _packed_slice(packed: PackedStringArray, from: int, to: int) -> Pack
 	for i in range(from, to):
 		out.append(packed[i])
 	return out
+
+
+## Whether an existing entry's launch text launches Godot AI: an executable
+## named `godot-ai`, a `godot-ai==<version>` package pin, the bare `godot-ai`
+## console-script argument, or the `godot_ai` module. Tokens are matched
+## exactly, so a URL or path that merely contains the name (a docs link, a
+## project directory) does not count. The post-update major migration
+## rewrites only such entries; anything else is the user's own server.
+static func launch_mentions_godot_ai(text: String) -> bool:
+	## Free text (a CLI probe's output) is split on spaces; structured launch
+	## values should go through `launch_values_mention_godot_ai` unsplit.
+	return launch_values_mention_godot_ai(PackedStringArray(text.split(" ", false)))
+
+
+## Each value is one command, argument or URL. A URI never names an
+## executable, and Windows separators are normalized before the basename
+## check so `C:\Program Files\Godot AI\godot-ai.exe` is recognized whole.
+static func launch_values_mention_godot_ai(values: PackedStringArray) -> bool:
+	for raw_value in values:
+		var value := raw_value.strip_edges().lstrip("\"'[{(").rstrip("\"'])},")
+		if value.is_empty() or value.contains("://"):
+			continue
+		if value == "godot-ai" or value == "godot_ai" or value.begins_with("godot-ai=="):
+			return true
+		var base := value.replace("\\", "/").get_file()
+		if base == "godot-ai" or base == "godot-ai.exe":
+			return true
+	return false
+
+
+## The launch-bearing fields of an entry, one value each, for the check
+## above. The entry sits under our server name, so the name itself must not
+## count.
+static func entry_launch_values(entry: Dictionary) -> PackedStringArray:
+	var values := PackedStringArray()
+	for key in ["command", "args", "url"]:
+		if not entry.has(key):
+			continue
+		var value: Variant = entry[key]
+		if value is Array:
+			for item in value:
+				values.append(str(item))
+		else:
+			values.append(str(value))
+	return values
