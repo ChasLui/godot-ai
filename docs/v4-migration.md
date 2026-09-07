@@ -16,6 +16,12 @@ confirmation button, or restart Godot yourself. Godot AI prepares and authentica
 complete add-on tree, updates owned client entries, and restarts the matching
 managed server automatically.
 
+If an AI client runs on another machine or in a container and reached v3 at
+`http://<host>:8000/mcp`, set up the SSH-launched bridge described in
+[Agents on another machine or in a container](client-configuration.md#agents-on-another-machine-or-in-a-container)
+before you update. v4 accepts no bare URL, so that client stays disconnected
+until the bridge exists.
+
 Cherry Studio is not supported in v4; remove its stale v3 entry in Cherry
 Studio itself. Godot AI cannot safely edit that application's internal database.
 

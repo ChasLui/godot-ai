@@ -114,9 +114,9 @@ MCP client
 ```
 
 Both local hops use independent rotating capabilities; neither falls back to
-unauthenticated access. The editor WebSocket stays loopback-only. For remote
-access, prefer an SSH-launched attach command on the server host rather than
-storing a capability in client configuration.
+unauthenticated access. The editor WebSocket stays loopback-only. An agent in
+a container or on another machine runs the bridge on the editor machine over
+SSH; see [Agents on another machine or in a container](docs/client-configuration.md#agents-on-another-machine-or-in-a-container).
 
 These controls do not protect against a compromised same-user process. Windows
 also does not claim isolation from other local accounts. See the

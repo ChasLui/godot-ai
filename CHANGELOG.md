@@ -28,6 +28,15 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 - A failed download releases the update lock
   ([#1001](https://github.com/hi-godot/godot-ai/pull/1001)).
 
+### Changed
+
+- Documented the supported way to connect an agent that runs in a container,
+  in WSL2, or on another machine: the `godot-ai attach` bridge launched on the
+  editor machine over SSH, with the Docker Desktop, Docker Engine, and WSL2
+  host names ([#1008](https://github.com/hi-godot/godot-ai/issues/1008);
+  a first-class remote mode is tracked in
+  [#1009](https://github.com/hi-godot/godot-ai/issues/1009)).
+
 ## 4.0.2 (2026-09-07)
 
 Fixes the in-editor updater's download. Nothing else changed.
