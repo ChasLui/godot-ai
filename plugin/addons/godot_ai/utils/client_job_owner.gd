@@ -90,11 +90,19 @@ func _init() -> void:
 
 
 func _ready() -> void:
-	## Work can start before this node is ready: the plugin begins post-update
-	## client migration while it is still entering the tree, and this callback
-	## runs after that. Idle only when nothing is in flight; becoming ready
-	## must never cancel the poll for a thread that is already running.
-	set_process(_has_work_in_flight())
+	## Work can start — and the owner can be activated — before this node is
+	## ready. The composition root adds this child, wires it, and calls
+	## `activate()` inside the plugin's `_enter_tree`; Godot defers a child's
+	## `_ready` until that returns, so this callback runs LAST, after both the
+	## post-update migration thread and the ordinary activation seam.
+	##
+	## Scripts that define `_process` are processing by default, so an inert
+	## owner still has to turn it off here. What it must never do is turn it
+	## off again once work has been admitted: `_process` is the only thing that
+	## joins finished workers, so disabling it after `activate()` strands every
+	## refresh and client action for the rest of the session — the sweep never
+	## leaves RUNNING, Configure never leaves its last published phase.
+	set_process(_accepting_work or _has_work_in_flight())
 
 
 func _has_work_in_flight() -> bool:
@@ -469,6 +477,9 @@ func _start_action(client_id: String, action: String, request_id: String) -> Dic
 		_action_names.erase(client_id)
 		_action_request_ids.erase(client_id)
 		return {"ok": false, "error": "Could not start client worker thread."}
+	## Same invariant `begin_post_update_repin` states: a live Thread is only
+	## ever joined from `_process`, so spawning one must guarantee the poll.
+	set_process(true)
 	_publish_snapshot()
 	return {
 		"ok": true,
@@ -719,6 +730,8 @@ func request_status_refresh(ids: Array[String], force := false) -> bool:
 		_refresh_state = RefreshState.IDLE
 		_publish_snapshot()
 		return false
+	## See `_start_action`: the sweep leaves RUNNING only through `_poll_refresh`.
+	set_process(true)
 	_publish_snapshot()
 	return true
 
