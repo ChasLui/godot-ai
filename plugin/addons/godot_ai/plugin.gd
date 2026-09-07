@@ -721,7 +721,12 @@ func _on_dock_log_snapshot_requested(after_sequence: int) -> void:
 
 func _on_dock_plugin_reload_requested(reason: String) -> void:
 	Telemetry.record_pending_plugin_reload(reason)
-	_reload_plugin_from_dock.call_deferred()
+	## The reload frees this plugin, so it must not run on one of this
+	## instance's own frames: defer the static call itself, never a method of
+	## this instance. A deferred method that reloads synchronously returns into
+	## a freed script and takes the editor down (SIGBUS/SIGABRT after
+	## "Bad address index").
+	PluginReload.reload_enabled_plugin.call_deferred()
 
 
 func _on_dock_settings_apply_requested(changes: Dictionary, reload: bool) -> void:
@@ -737,10 +742,6 @@ func _on_dock_settings_apply_requested(changes: Dictionary, reload: bool) -> voi
 		_telemetry.assert_opt_out()
 	if reload:
 		_on_dock_plugin_reload_requested("endpoint_settings")
-
-
-func _reload_plugin_from_dock() -> void:
-	PluginReload.reload_enabled_plugin()
 
 
 func _on_dock_update_requested() -> void:
