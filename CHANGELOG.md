@@ -224,14 +224,17 @@ last shared tag).
   because `/home` is a symbolic link
   ([#993](https://github.com/hi-godot/godot-ai/issues/993)); the README
   documents the `GODOT_AI_CAPABILITY_DIR` workaround.
-- The dock's **Reload Plugin** button can crash the editor (fix in review,
-  [#1000](https://github.com/hi-godot/godot-ai/pull/1000)).
+- The dock's **Reload Plugin** button can crash the editor. Fixed on `main` by
+  [#1000](https://github.com/hi-godot/godot-ai/pull/1000); ships in the next
+  release.
 - After an in-session update the dock's Update button reads **Update
-  complete** and cannot take a newer release until the editor restarts (fix in
-  review, [#1002](https://github.com/hi-godot/godot-ai/pull/1002)).
+  complete** and cannot take a newer release until the editor restarts. Fixed
+  on `main` by [#1002](https://github.com/hi-godot/godot-ai/pull/1002); ships
+  in the next release.
 - A failed download leaves the update lock in place; clicking Update again in
-  the same editor still works (fix in review,
-  [#1001](https://github.com/hi-godot/godot-ai/pull/1001)).
+  the same editor still works. Fixed on `main` by
+  [#1001](https://github.com/hi-godot/godot-ai/pull/1001); ships in the next
+  release.
 - The limits accepted for 4.0.0 after independent review are recorded in
   [docs/self-update.md](docs/self-update.md#known-limits-400).
 
