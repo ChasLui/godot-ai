@@ -813,6 +813,29 @@ func _load_reload_helper(path: String) -> GDScript:
 	return loaded
 
 
+## Every invocation writes a fresh path, so also drop the `.uid` sidecar the
+## editor generates on register — otherwise each run leaves one behind.
+func _remove_reload_helper(path: String) -> void:
+	DirAccess.remove_absolute(path)
+	if FileAccess.file_exists(path + ".uid"):
+		DirAccess.remove_absolute(path + ".uid")
+
+
+## Stand-in for a GUI editor. There, EditorFileSystem.update_file() runs the
+## script-documentation pass synchronously (a headless editor skips it): it
+## ResourceLoader.load()s a never-loaded script into the cache and reloads a
+## cached one from disk. Replaying that inside the handler's register seam
+## lets a headless run lock the decide-before-register ordering.
+class _GuiEditorScriptHandler extends ScriptHandler:
+	func _register_written_file(path: String) -> void:
+		super(path)
+		if ResourceLoader.has_cached(path):
+			# EditorFileSystem::_should_reload_script -> Script::reload_from_file
+			ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+		else:
+			ResourceLoader.load(path)
+
+
 func test_patch_script_refreshes_loaded_gdscript() -> void:
 	## Regression for #937: a loaded GDScript kept the old body after a patch.
 	var path := _unique_reload_path("patch")
@@ -829,7 +852,7 @@ func test_patch_script_refreshes_loaded_gdscript() -> void:
 	# The SAME object an agent (or a node) already holds now runs the new code.
 	assert_eq(loaded.new().value(), "new")
 	assert_eq(ResourceLoader.load(path).new().value(), "new")
-	DirAccess.remove_absolute(path)
+	_remove_reload_helper(path)
 
 
 func test_create_script_overwrite_refreshes_loaded_gdscript() -> void:
@@ -844,7 +867,7 @@ func test_create_script_overwrite_refreshes_loaded_gdscript() -> void:
 	assert_eq(result.data.import_settle, "already_known")
 	assert_eq(result.data.reloaded, true)
 	assert_eq(loaded.new().value(), "newer")
-	DirAccess.remove_absolute(path)
+	_remove_reload_helper(path)
 
 
 func test_patch_script_reports_not_loaded_when_nothing_cached() -> void:
@@ -858,7 +881,7 @@ func test_patch_script_reports_not_loaded_when_nothing_cached() -> void:
 	assert_has_key(result, "data")
 	assert_eq(result.data.reloaded, false)
 	assert_eq(result.data.reload_reason, "not_loaded")
-	DirAccess.remove_absolute(path)
+	_remove_reload_helper(path)
 
 
 func test_patch_script_skips_reload_on_parse_error() -> void:
@@ -881,4 +904,39 @@ func test_patch_script_skips_reload_on_parse_error() -> void:
 	assert_eq(result.data.reload_reason, "parse_error")
 	assert_eq(result.data.diagnostics_status, "checked")
 	assert_true(result.data.diagnostics.size() >= 1, "the parse error is reported as a diagnostic")
-	DirAccess.remove_absolute(path)
+	_remove_reload_helper(path)
+
+
+func test_patch_script_reports_not_loaded_when_the_editor_caches_on_register() -> void:
+	## GUI-editor regression: the editor's own load inside update_file() must
+	## not turn "nobody held this script" into a false already_current.
+	var path := _unique_reload_path("gui_cold")
+	_write_reload_helper("old", path)
+	assert_false(ResourceLoader.has_cached(path), "fixture must start uncached")
+	var gui := _GuiEditorScriptHandler.new(_undo_redo)
+	var result := gui.patch_script({"path": path, "old_text": "\"old\"", "new_text": "\"new\""})
+	assert_has_key(result, "data")
+	assert_eq(result.data.reloaded, false)
+	assert_eq(result.data.reload_reason, "not_loaded")
+	assert_true(ResourceLoader.has_cached(path), "the stand-in editor cached the script on register")
+	assert_eq(
+		EditorInterface.get_resource_filesystem().get_file_type(path), "GDScript",
+		"the write is still registered with the editor")
+	_remove_reload_helper(path)
+
+
+func test_patch_script_refreshes_before_the_editor_reloads_on_register() -> void:
+	## GUI-editor regression: the handler refreshes the held object itself, so
+	## `reloaded` carries no skip reason even though the editor's register pass
+	## reloads the same bytes right after it.
+	var path := _unique_reload_path("gui_patch")
+	_write_reload_helper("old", path)
+	var loaded: GDScript = _load_reload_helper(path)
+	assert_eq(loaded.new().value(), "old")
+	var gui := _GuiEditorScriptHandler.new(_undo_redo)
+	var result := gui.patch_script({"path": path, "old_text": "\"old\"", "new_text": "\"new\""})
+	assert_has_key(result, "data")
+	assert_eq(result.data.reloaded, true)
+	assert_false(result.data.has("reload_reason"), "a reloaded script carries no skip reason")
+	assert_eq(loaded.new().value(), "new")
+	_remove_reload_helper(path)
