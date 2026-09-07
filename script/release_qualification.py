@@ -18,6 +18,7 @@ from typing import Any
 from script import qualification_engine as engine
 from script import release_support as support
 
+BUILD_REQUIREMENTS = ("setuptools==84.0.0", "wheel==0.46.3")
 TEST_REQUIREMENTS = (
     "pytest==9.1.1",
     "pytest-xdist==3.8.0",
@@ -25,8 +26,7 @@ TEST_REQUIREMENTS = (
     "pytest-cov==7.1.0",
     "hypothesis==6.167.1",
     "pillow==12.3.0",
-    "setuptools==84.0.0",
-    "wheel==0.46.3",
+    *BUILD_REQUIREMENTS,
     "pyyaml==6.0.3",
     "psutil==7.2.2",
 )
@@ -360,6 +360,7 @@ def python_row(candidates: Path, source: Path, output: Path, os_label: str) -> N
     try:
         # Resolve once for A, then use only these retained bytes for both A and B.
         # B's source validation forbids dependency changes.
+        print(f"Resolving and retaining dependencies -> {output / 'resolve.log'}", flush=True)
         wheel_a = candidates / "a/dist" / f"godot_ai-{records['a']['version']}-py3-none-any.whl"
         execute(
             [
@@ -391,6 +392,11 @@ def python_row(candidates: Path, source: Path, output: Path, os_label: str) -> N
             for name in ("a", "b"):
                 version = records[name]["version"]
                 for package_type in ("wheel", "sdist") if name == "a" else ("wheel",):
+                    print(
+                        f"Installing candidate {name.upper()} {package_type} offline "
+                        f"-> {output / 'install.log'}",
+                        flush=True,
+                    )
                     target = work / f"{name}-{package_type}"
                     execute(
                         [sys.executable, "-m", "venv", str(target)],
@@ -399,21 +405,31 @@ def python_row(candidates: Path, source: Path, output: Path, os_label: str) -> N
                         environment=environment,
                     )
                     python = str(environment_python(target))
-                    execute(
-                        [
-                            python,
-                            "-m",
-                            "pip",
-                            "install",
-                            "--no-index",
-                            "--find-links",
-                            str(packages),
-                            *TEST_REQUIREMENTS,
-                        ],
-                        output / "install.log",
-                        cwd=work,
-                        environment=environment,
+                    # Only A's wheel runs tests. The sdist needs build tools;
+                    # B's wheel must work with runtime dependencies alone.
+                    requirements = (
+                        TEST_REQUIREMENTS
+                        if name == "a" and package_type == "wheel"
+                        else BUILD_REQUIREMENTS
+                        if package_type == "sdist"
+                        else ()
                     )
+                    if requirements:
+                        execute(
+                            [
+                                python,
+                                "-m",
+                                "pip",
+                                "install",
+                                "--no-index",
+                                "--find-links",
+                                str(packages),
+                                *requirements,
+                            ],
+                            output / "install.log",
+                            cwd=work,
+                            environment=environment,
+                        )
                     filename = (
                         f"godot_ai-{version}-py3-none-any.whl"
                         if package_type == "wheel"
@@ -457,6 +473,10 @@ def python_row(candidates: Path, source: Path, output: Path, os_label: str) -> N
                         environment=environment,
                     )
                     if package_type == "wheel" and name == "a":
+                        print(
+                            f"Testing installed candidate A wheel -> {output / 'a-pytest.log'}",
+                            flush=True,
+                        )
                         junit = output / f"{name}-pytest.xml"
                         # Override the development pythonpath so tests import the
                         # installed wheel. Godot fixture tests are run separately;
@@ -494,6 +514,7 @@ def python_row(candidates: Path, source: Path, output: Path, os_label: str) -> N
                         report["tests"][name] = summary
             # The closed-editor installer runs no Python of its own: it verifies,
             # stages and swaps the signed tree from the candidate directory alone.
+            print("Verifying closed-editor installs for candidates A and B", flush=True)
             report["installs"] = {
                 name: closed_install(
                     candidates / name,
@@ -507,6 +528,7 @@ def python_row(candidates: Path, source: Path, output: Path, os_label: str) -> N
         # Environment-inapplicable development tests may skip; this report does
         # not grant the separate zero-required-skip runtime qualification gate.
         report["status"] = "passed"
+        print(f"Python qualification passed -> {output / 'row.json'}", flush=True)
     finally:
         report["files"] = support.inventory(output)
         (output / "row.json").write_bytes(support.canonical(report))
