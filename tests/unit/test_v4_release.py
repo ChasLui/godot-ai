@@ -892,9 +892,14 @@ def test_windows_refuses_an_output_directory_too_long_for_staging(tmp_path, monk
     original = v4_release.os.name
     try:
         monkeypatch.setattr(v4_release.os, "name", "nt")
+        monkeypatch.setattr(v4_release, "_windows_long_paths_enabled", lambda: False)
         with pytest.raises(v4_release.ReleaseError, match="shorter --output-dir"):
             v4_release._require_new_destinations((long_destination,))
         v4_release._require_new_destinations((short_destination,))
+        # A Windows with long paths enabled (the hosted runners) stages anywhere.
+        monkeypatch.setattr(v4_release, "_windows_long_paths_enabled", lambda: True)
+        v4_release._require_new_destinations((long_destination,))
+        monkeypatch.setattr(v4_release, "_windows_long_paths_enabled", lambda: False)
         monkeypatch.setattr(v4_release.os, "name", "posix")
         v4_release._require_new_destinations((long_destination,))
     finally:

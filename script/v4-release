@@ -405,10 +405,30 @@ def _write_zip(path: Path, snapshot: list[tuple[str, bytes]]) -> None:
 MAX_WINDOWS_OUTPUT_PATH = 200
 
 
+def _windows_long_paths_enabled() -> bool:
+    """Whether this Windows lets paths pass 260 characters (registry opt-in)."""
+    if os.name != "nt":
+        return True
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem"
+        ) as key:
+            value, _kind = winreg.QueryValueEx(key, "LongPathsEnabled")
+            return int(value) == 1
+    except OSError:
+        return False
+
+
 def _require_new_destinations(destinations: tuple[Path, ...]) -> None:
     for path in destinations:
         parent = str(path.parent)
-        if os.name == "nt" and len(parent) > MAX_WINDOWS_OUTPUT_PATH:
+        if (
+            os.name == "nt"
+            and len(parent) > MAX_WINDOWS_OUTPUT_PATH
+            and not _windows_long_paths_enabled()
+        ):
             _fail(
                 "output",
                 f"output directory is {len(parent)} characters; Windows without long-path"
