@@ -266,6 +266,7 @@ CodeBuddy uses the standard `mcpServers` JSON map with `type: "stdio"` and
 `command`/`args`/`env` ([official MCP documentation](https://www.codebuddy.ai/docs/zh/ide/User-guide/MCP)).
 Configure writes the user-scoped `~/.codebuddy/mcp.json` (Windows:
 `%USERPROFILE%/.codebuddy/mcp.json`), whose location was verified by the
-reporter of #941. CodeBuddy also accepts `<project>/.codebuddy/mcp.json`;
-use its MCP settings and the dock's manual attach entry for project scope.
-Automatic project-scope selection is not part of this descriptor.
+reporter of #941. For project scope, use the file opened by CodeBuddy IDE's
+MCP settings and the dock's manual attach entry. Project paths vary between
+CodeBuddy IDE and CodeBuddy Code (CLI); automatic project-scope selection is
+not part of this descriptor.

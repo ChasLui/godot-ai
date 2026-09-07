@@ -3,8 +3,8 @@ extends McpClient
 
 ## CodeBuddy IDE: https://www.codebuddy.ai/docs/zh/ide/User-guide/MCP
 ## Official docs specify mcpServers + type:stdio + command/args/env.
-## Global ~/.codebuddy/mcp.json and project .codebuddy/mcp.json were verified
-## by the reporter in #941. This descriptor uses the global user scope,
+## Global ~/.codebuddy/mcp.json was verified by the reporter in #941.
+## This descriptor uses the global user scope,
 ## matching the registry's absolute user-path contract; project configuration
 ## remains available manually in CodeBuddy's MCP settings.
 
