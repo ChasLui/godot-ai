@@ -185,7 +185,8 @@ still repins owned client entries to the installed version before serving.
   of them. With the
   capsule coordinator's restart handoff in
   `tests/integration/test_migration_bridge_failures.py`, they run on Linux on
-  every pull request and on all three desktop OSes nightly, and the release
+  every pull request (private HTTPS delivery) and on all three desktop OSes
+  nightly (also local-file delivery on Linux/macOS), and the release
   pipeline's A-to-B row runs the signed update on the exact signed candidate
   on every OS before publication.
 - Interactive pass: `script/local-self-update-smoke` prepares a signed

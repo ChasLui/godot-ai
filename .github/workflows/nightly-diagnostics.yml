@@ -87,6 +87,43 @@ jobs:
             pytest "${pytest_args[@]}"
           fi
 
+      - name: Start MCP server
+        shell: bash
+        run: MCP_SERVER_LOG=diagnostics/mcp-server.log bash script/ci-start-server
+
+      - name: Import and validate GDScript
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          godot --headless --path test_project --import > diagnostics/godot-import.log 2>&1 || true
+          bash script/ci-check-gdscript diagnostics/godot-import.log
+
+      - name: Start Godot editor (headless)
+        shell: bash
+        run: GODOT_AI_ALLOW_HEADLESS=1 godot --headless --path test_project --editor > diagnostics/godot-editor.log 2>&1 &
+
+      - name: Run handler tests
+        shell: bash
+        timeout-minutes: 3
+        env:
+          # #882: floor on test_run's `total`, catching in-suite discovery
+          # truncation that the script's suite-count gate cannot see (a suite
+          # can register and still run fewer tests than it has). Keep this a
+          # little below the real count so ordinary churn doesn't trip it;
+          # lower it deliberately when tests are legitimately removed.
+          GODOT_AI_MIN_TESTS: "2050"
+        run: bash script/ci-godot-tests
+
+      - name: Ten-reload stress test
+        shell: bash
+        timeout-minutes: 5
+        run: bash script/ci-reload-test --stress
+
+      - name: Quit smoke test
+        shell: bash
+        timeout-minutes: 2
+        run: bash script/ci-quit-test
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
