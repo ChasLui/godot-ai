@@ -246,15 +246,16 @@ def test_private_capability_is_never_written_to_retained_log(tmp_path):
     )
 
 
-def test_private_capability_scan_covers_nested_retained_files(tmp_path):
-    nested = tmp_path / "nested"
-    nested.mkdir()
+@pytest.mark.parametrize("relative", ["nested", "addons/.godot_ai_update/backup/4.0.0"])
+def test_private_capability_scan_covers_nested_retained_files(tmp_path, relative):
+    nested = tmp_path / relative
+    nested.mkdir(parents=True)
     (nested / "clean.bin").write_bytes(b"ordinary retained evidence")
     runtime._require_values_absent(tmp_path, ("private-token",))
     (nested / "leak.bin").write_bytes(b"prefix private-token suffix")
     with pytest.raises(support.ReleaseError) as caught:
         runtime._require_values_absent(tmp_path, ("private-token",))
-    assert f"persisted in {Path('nested') / 'leak.bin'}" in str(caught.value)
+    assert f"persisted in {Path(relative) / 'leak.bin'}" in str(caught.value)
 
 
 def test_private_index_path_capability_can_be_scanned_independently():
