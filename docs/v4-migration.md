@@ -19,10 +19,11 @@ managed server automatically.
 Cherry Studio is not supported in v4; remove its stale v3 entry in Cherry
 Studio itself. Godot AI cannot safely edit that application's internal database.
 
-The public v4 release is not available yet: publication remains fail-closed
-until the cross-platform qualification run is complete and the maintainer
-approves promotion. The steps above describe the supported flow once
-publication opens. Do not install an unpublished candidate into a real project.
+Use a published, signed v4 release. If an installed 4.0.0 or 4.0.1 reports
+`download failed (302)` when updating, retrying cannot fix its redirect bug.
+See the [release-support recovery procedure](releasing.md#recovering-the-400--401-http-302-download-failure)
+for a verified closed-editor installation; do not overlay add-on files or
+install an unpublished candidate into a real project.
 
 ## What the Update click does
 

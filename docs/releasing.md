@@ -284,6 +284,27 @@ embedded triple ([v4-migration.md](v4-migration.md)).
 from outside a running editor. It exists for release qualification and for
 recovery; it is not an end-user path.
 
+## Recovering the 4.0.0 / 4.0.1 HTTP 302 download failure
+
+These versions reject GitHub's download redirect before staging an update.
+The fix in 4.0.2 cannot repair an already-installed updater through that same
+broken download path. Release support must use the existing closed-editor
+installer to install a published, verified release once; normal in-editor
+updates can resume afterward. Do not overlay files into the installed add-on.
+
+Close the project's editor. From a trusted checkout of the published release,
+download its canonical ZIP, manifest, and signature using a client that follows
+HTTPS redirects, then run `script/v4-release install` with those three files,
+`--project-root` set to the affected project, and all `--expected-*` fields set
+to the published repository, stable channel, tag, version, and full source SHA.
+The installer verifies the signature and complete inventory before swapping
+the tree and retains the previous add-on for recovery. Reopen Godot and confirm
+the installed version and client connection. An unqualified candidate is not a
+recovery release.
+
+The private qualification origin now redirects asset URLs before serving
+their bytes, so every exact A-to-B update test exercises this path.
+
 ## Recovery: the three marker states
 
 Everything the updater writes lives under `addons/.godot_ai_update/` inside the

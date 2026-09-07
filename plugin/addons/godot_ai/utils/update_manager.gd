@@ -323,6 +323,13 @@ static func _is_trusted_download_url(url: String, qualification: Dictionary = {}
 	var parts := _https_url_parts(url)
 	if parts.is_empty():
 		return false
+	## Current GitHub release assets use a slash-delimited repository ID;
+	## retain the older CDN namespace below for existing release URLs.
+	if (
+		parts.host == "release-assets.githubusercontent.com"
+		and str(parts.path).begins_with("/github-production-release-asset/1208239711/")
+	):
+		return true
 	if (
 		str(parts.origin) == str(qualification.get("asset_origin", ""))
 		and str(parts.path).begins_with(str(qualification.get("asset_path", "")))
@@ -447,7 +454,13 @@ func _on_asset_completed(
 	if _asset_request != null:
 		_asset_request.queue_free()
 		_asset_request = null
-	if result == HTTPRequest.RESULT_SUCCESS and response_code in [301, 302, 303, 307, 308]:
+	## With max_redirects = 0 Godot returns REDIRECT_LIMIT_REACHED on the
+	## first redirect, including its status and Location. Validate that hop
+	## ourselves; other transport failures must still fail closed.
+	if (
+		result in [HTTPRequest.RESULT_SUCCESS, HTTPRequest.RESULT_REDIRECT_LIMIT_REACHED]
+		and response_code in [301, 302, 303, 307, 308]
+	):
 		var redirect := _redirect_url(headers)
 		DirAccess.remove_absolute(_download_path(_active_asset))
 		if (

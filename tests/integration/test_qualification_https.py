@@ -167,11 +167,11 @@ def test_real_godot_uses_verified_default_port_https_without_system_changes(tmp_
             assert report["metadata"]["result"] == 0
             assert report["metadata"]["status"] == 200
             assert report["asset"] == {
-                "result": 0,
-                "status": 200,
-                "sha256": hashlib.sha256(b"godot-ai-v4-plugin.zip").hexdigest(),
+                "result": 12,  # RESULT_REDIRECT_LIMIT_REACHED with max_redirects=0
+                "status": 302,
+                "sha256": hashlib.sha256(b"").hexdigest(),
             }
-            assert endpoint.downloads == ["godot-ai-v4-plugin.zip"]
+            assert endpoint.downloads == []
         elif mode == "wrong-token":
             assert report["metadata"]["result"] == 0
             assert report["metadata"]["status"] == 401
@@ -250,7 +250,7 @@ def test_unchanged_update_manager_discovers_and_downloads_over_private_https(tmp
                 "manifest": "godot-ai-v4-plugin.manifest.json",
                 "signature": "godot-ai-v4-plugin.manifest.sig",
             }
-            assert report["requests"] == 4
+            assert report["requests"] == 7  # metadata + redirect and download for each asset
             assert endpoint.downloads == list(expected_paths.values())
             assert report["hashes"] == {
                 field: inventory[name]["sha256"] for field, name in expected_paths.items()
