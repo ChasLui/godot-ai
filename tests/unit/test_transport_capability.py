@@ -68,9 +68,7 @@ def test_only_root_owned_sticky_directory_is_safe_as_writable_ancestor() -> None
     assert capability_module._is_safe_posix_ancestor(Path("/tmp"), root_sticky)
     assert not capability_module._is_safe_posix_ancestor(Path("/tmp"), user_writable)
     assert not capability_module._is_safe_posix_ancestor(Path("/tmp"), other_sticky)
-    assert not capability_module._is_safe_posix_ancestor(
-        Path("/untrusted-sticky"), root_sticky
-    )
+    assert not capability_module._is_safe_posix_ancestor(Path("/untrusted-sticky"), root_sticky)
 
 
 @pytest.mark.parametrize("length", [31, 129])
@@ -242,9 +240,7 @@ def test_capability_directory_rejects_relative_xdg(monkeypatch) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX XDG ancestor mode contract")
-def test_default_xdg_capability_directory_rejects_writable_ancestor(
-    monkeypatch, tmp_path
-) -> None:
+def test_default_xdg_capability_directory_rejects_writable_ancestor(monkeypatch, tmp_path) -> None:
     unsafe = tmp_path / "unsafe-xdg-parent"
     unsafe.mkdir(mode=0o700)
     unsafe.chmod(0o777)
@@ -264,3 +260,159 @@ def test_explicit_capability_directory_rejects_writable_ancestor(tmp_path) -> No
 
     with pytest.raises(OSError, match="unsafe ancestor"):
         record_path(8128, unsafe / "records")
+
+
+FAKE_ROOT = "/godot-ai-fake-root"
+
+
+def _directory(uid: int, mode: int = 0o755) -> os.stat_result:
+    return os.stat_result((stat.S_IFDIR | mode, 0, 0, 0, uid, 0, 0, 0, 0, 0))
+
+
+def _link(uid: int) -> os.stat_result:
+    return os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 0, uid, 0, 0, 0, 0, 0))
+
+
+def _fake_tree(monkeypatch, entries: dict[str, os.stat_result], links: dict[str, str]) -> None:
+    """Overlay a synthetic directory tree onto lstat/readlink for the listed paths only."""
+
+    real_lstat = Path.lstat
+    real_readlink = os.readlink
+
+    def lstat(self):
+        key = str(self)
+        if key in entries:
+            return entries[key]
+        if key.startswith(FAKE_ROOT):
+            raise FileNotFoundError(key)
+        return real_lstat(self)
+
+    def readlink(path, *args, **kwargs):
+        key = str(path)
+        if key in links:
+            return links[key]
+        return real_readlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    monkeypatch.setattr(capability_module.os, "readlink", readlink)
+
+
+def _ostree_home(monkeypatch, link_uid: int = 0, parent_mode: int = 0o755) -> None:
+    """Fedora Atomic's layout: ``/home -> var/home`` (relative, root-owned)."""
+
+    me = os.getuid()
+    _fake_tree(
+        monkeypatch,
+        {
+            FAKE_ROOT: _directory(0, parent_mode),
+            f"{FAKE_ROOT}/home": _link(link_uid),
+            f"{FAKE_ROOT}/var": _directory(0),
+            f"{FAKE_ROOT}/var/home": _directory(0),
+            f"{FAKE_ROOT}/var/home/me": _directory(me, 0o700),
+            f"{FAKE_ROOT}/var/home/me/.config": _directory(me, 0o700),
+        },
+        {f"{FAKE_ROOT}/home": "var/home"},
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX link contract")
+def test_root_owned_home_link_is_followed_to_its_canonical_path(monkeypatch) -> None:
+    _ostree_home(monkeypatch)
+    requested = Path(f"{FAKE_ROOT}/home/me/.config/godot-ai/capabilities")
+
+    resolved = capability_module._reject_unsafe_posix_ancestors(requested)
+
+    assert resolved == Path(f"{FAKE_ROOT}/var/home/me/.config/godot-ai/capabilities")
+    assert record_path(8000, requested) == resolved / "http-8000.json"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX link contract")
+def test_default_directory_resolves_through_the_home_link(monkeypatch) -> None:
+    _ostree_home(monkeypatch)
+    monkeypatch.delenv("GODOT_AI_CAPABILITY_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("HOME", f"{FAKE_ROOT}/home/me")
+    monkeypatch.setattr(capability_module.sys, "platform", "linux")
+
+    assert capability_directory() == Path(f"{FAKE_ROOT}/var/home/me/.config/godot-ai/capabilities")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX link contract")
+@pytest.mark.parametrize("link_uid", ["self", "other"])
+def test_links_not_owned_by_root_fail_closed(monkeypatch, link_uid) -> None:
+    _ostree_home(monkeypatch, link_uid=os.getuid() if link_uid == "self" else os.getuid() + 1)
+
+    with pytest.raises(OSError, match="link or reparse"):
+        capability_module._reject_unsafe_posix_ancestors(Path(f"{FAKE_ROOT}/home/me/.config"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX link contract")
+def test_root_owned_link_in_a_writable_directory_fails_closed(monkeypatch) -> None:
+    # /tmp is an accepted sticky ancestor, but a link inside it is not followed.
+    me = os.getuid()
+    _fake_tree(
+        monkeypatch,
+        {
+            "/tmp": _directory(0, 0o1777),
+            "/tmp/godot-ai-link": _link(0),
+            f"{FAKE_ROOT}": _directory(0),
+            f"{FAKE_ROOT}/real": _directory(me, 0o700),
+        },
+        {"/tmp/godot-ai-link": f"{FAKE_ROOT}/real"},
+    )
+
+    with pytest.raises(OSError, match="link or reparse"):
+        capability_module._reject_unsafe_posix_ancestors(Path("/tmp/godot-ai-link/records"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX link contract")
+def test_link_chain_past_the_hop_bound_fails_closed(monkeypatch) -> None:
+    _fake_tree(
+        monkeypatch,
+        {FAKE_ROOT: _directory(0), f"{FAKE_ROOT}/a": _link(0), f"{FAKE_ROOT}/b": _link(0)},
+        {f"{FAKE_ROOT}/a": f"{FAKE_ROOT}/b", f"{FAKE_ROOT}/b": f"{FAKE_ROOT}/a"},
+    )
+
+    with pytest.raises(OSError, match="link or reparse"):
+        capability_module._reject_unsafe_posix_ancestors(Path(f"{FAKE_ROOT}/a/records"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX link contract")
+def test_relative_parent_link_target_resolves_against_the_walked_parent(monkeypatch) -> None:
+    # ostree's tmpfiles line: L /var/home - - - - ../sysroot/home
+    me = os.getuid()
+    _fake_tree(
+        monkeypatch,
+        {
+            FAKE_ROOT: _directory(0),
+            f"{FAKE_ROOT}/var": _directory(0),
+            f"{FAKE_ROOT}/var/home": _link(0),
+            f"{FAKE_ROOT}/sysroot": _directory(0),
+            f"{FAKE_ROOT}/sysroot/home": _directory(0),
+            f"{FAKE_ROOT}/sysroot/home/me": _directory(me, 0o700),
+        },
+        {f"{FAKE_ROOT}/var/home": "../sysroot/home"},
+    )
+
+    resolved = capability_module._reject_unsafe_posix_ancestors(
+        Path(f"{FAKE_ROOT}/var/home/me/.config")
+    )
+
+    assert resolved == Path(f"{FAKE_ROOT}/sysroot/home/me/.config")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX link contract")
+def test_target_ancestors_are_held_to_the_same_rule(monkeypatch) -> None:
+    # A root-owned link may not lead into a tree another account can write to.
+    _fake_tree(
+        monkeypatch,
+        {
+            FAKE_ROOT: _directory(0),
+            f"{FAKE_ROOT}/home": _link(0),
+            f"{FAKE_ROOT}/shared": _directory(0, 0o777),
+        },
+        {f"{FAKE_ROOT}/home": f"{FAKE_ROOT}/shared"},
+    )
+
+    with pytest.raises(OSError, match="unsafe ancestor"):
+        capability_module._reject_unsafe_posix_ancestors(Path(f"{FAKE_ROOT}/home/me"))

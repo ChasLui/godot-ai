@@ -5,6 +5,26 @@ this file at the release's exact source commit, and its "What's Changed"
 section lists every merged pull request; this file keeps the part worth
 reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
+## Unreleased
+
+### Fixed
+
+- **Bazzite / Fedora Atomic:** the server exited before publishing its
+  capability record because `/home` is a symbolic link to `/var/home` and 4.0.x
+  refused every link in a capability path. The server and the plugin now follow
+  a link when it is root-owned and sits in a root-owned directory that other
+  accounts cannot write, which is exactly the ostree layout; every other link
+  still fails closed. The `GODOT_AI_CAPABILITY_DIR` workaround is no longer
+  needed there ([#993](https://github.com/hi-godot/godot-ai/issues/993),
+  reported again in [#989](https://github.com/hi-godot/godot-ai/issues/989)).
+- The dock's **Reload Plugin** button no longer crashes the editor
+  ([#1000](https://github.com/hi-godot/godot-ai/pull/1000)).
+- After an in-session update the dock's Update button is an action again and
+  re-arms for a newer release without an editor restart
+  ([#1002](https://github.com/hi-godot/godot-ai/pull/1002)).
+- A failed download releases the update lock
+  ([#1001](https://github.com/hi-godot/godot-ai/pull/1001)).
+
 ## 4.0.2 (2026-09-07)
 
 Fixes the in-editor updater's download. Nothing else changed.

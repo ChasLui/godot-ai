@@ -102,40 +102,119 @@ func test_rejects_permissive_posix_mode() -> void:
 	assert_true(McpTransportCapability._read_path(_record_path).is_empty())
 
 
-func test_rejects_symlinked_ancestor_on_posix() -> void:
+func test_follows_a_link_below_a_closed_parent_on_posix() -> void:
 	if OS.get_name() == "Windows":
 		skip("creating POSIX symlinks is not portable on Windows")
 		return
 	var real_dir := _scratch_dir + "_real"
-	var linked_dir := _scratch_dir + "_link"
-	DirAccess.make_dir_recursive_absolute(real_dir)
-	FileAccess.set_unix_permissions(
-		real_dir,
-		FileAccess.UNIX_READ_OWNER
-		| FileAccess.UNIX_WRITE_OWNER
-		| FileAccess.UNIX_EXECUTE_OWNER,
-	)
-	var real_record := real_dir.path_join("http-8122.json")
-	var file := FileAccess.open(real_record, FileAccess.WRITE)
-	file.store_string(_canonical_record())
-	file.close()
-	FileAccess.set_unix_permissions(
-		real_record, FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER
-	)
+	var real_record := _private_record_in(real_dir)
+	## The link lives inside the suite's 0700 scratch directory: only its owner
+	## or root could have placed it, so the walk follows it (#993).
+	var linked_dir := _scratch_dir.path_join("closed-link")
 	DirAccess.remove_absolute(linked_dir)
-	var rc := OS.execute("ln", ["-s", real_dir, linked_dir])
-	if rc != 0:
+	if OS.execute("ln", ["-s", real_dir, linked_dir]) != 0:
+		skip("could not create a POSIX symlink")
+	else:
+		var result := McpTransportCapability._read_path(linked_dir.path_join("http-8122.json"))
+		assert_eq(
+			result.get("http", ""),
+			HTTP,
+			"a link placed in a directory closed to group/other writes is followed",
+		)
+		assert_eq(
+			McpTransportCapability._resolve_trusted_path(linked_dir.path_join("http-8122.json")),
+			real_record,
+		)
+	DirAccess.remove_absolute(linked_dir)
+	_remove_private_record_in(real_dir)
+
+
+func test_follows_a_relative_link_target_on_posix() -> void:
+	if OS.get_name() == "Windows":
+		skip("creating POSIX symlinks is not portable on Windows")
+		return
+	var real_dir := _scratch_dir + "_real"
+	var real_record := _private_record_in(real_dir)
+	## ostree writes `/home -> var/home`, a relative target; resolve it against
+	## the already-walked parent, as the kernel does.
+	var linked_dir := _scratch_dir.path_join("relative-link")
+	DirAccess.remove_absolute(linked_dir)
+	if OS.execute("ln", ["-s", "../" + real_dir.get_file(), linked_dir]) != 0:
+		skip("could not create a POSIX symlink")
+	else:
+		assert_eq(
+			McpTransportCapability._resolve_trusted_path(linked_dir.path_join("http-8122.json")),
+			real_record,
+		)
+		assert_eq(
+			McpTransportCapability._read_path(linked_dir.path_join("http-8122.json")).get("http", ""),
+			HTTP,
+		)
+	DirAccess.remove_absolute(linked_dir)
+	_remove_private_record_in(real_dir)
+
+
+func test_rejects_a_link_below_a_writable_parent_on_posix() -> void:
+	if OS.get_name() == "Windows":
+		skip("creating POSIX symlinks is not portable on Windows")
+		return
+	var real_dir := _scratch_dir + "_real"
+	_private_record_in(real_dir)
+	var open_dir := _scratch_dir.path_join("open")
+	DirAccess.make_dir_recursive_absolute(open_dir)
+	FileAccess.set_unix_permissions(open_dir, _WORLD_WRITABLE)
+	var linked_dir := open_dir.path_join("link")
+	DirAccess.remove_absolute(linked_dir)
+	if OS.execute("ln", ["-s", real_dir, linked_dir]) != 0:
 		skip("could not create a POSIX symlink")
 	else:
 		assert_true(
-			McpTransportCapability._read_path(
-				linked_dir.path_join("http-8122.json")
-			).is_empty(),
-			"an otherwise-private record below a symlinked ancestor must fail closed",
+			McpTransportCapability._read_path(linked_dir.path_join("http-8122.json")).is_empty(),
+			"a link that any account could have placed must fail closed",
 		)
+	FileAccess.set_unix_permissions(open_dir, _OWNER_ONLY)
 	DirAccess.remove_absolute(linked_dir)
-	DirAccess.remove_absolute(real_record)
-	DirAccess.remove_absolute(real_dir)
+	DirAccess.remove_absolute(open_dir)
+	_remove_private_record_in(real_dir)
+
+
+func test_rejects_a_linked_record_file_on_posix() -> void:
+	if OS.get_name() == "Windows":
+		skip("creating POSIX symlinks is not portable on Windows")
+		return
+	var real_dir := _scratch_dir + "_real"
+	var real_record := _private_record_in(real_dir)
+	var linked_record := _scratch_dir.path_join("http-8122.json")
+	DirAccess.remove_absolute(linked_record)
+	if OS.execute("ln", ["-s", real_record, linked_record]) != 0:
+		skip("could not create a POSIX symlink")
+	else:
+		assert_true(
+			McpTransportCapability._read_path(linked_record).is_empty(),
+			"the record file itself is never followed",
+		)
+	DirAccess.remove_absolute(linked_record)
+	_remove_private_record_in(real_dir)
+
+
+func test_rejects_a_link_loop_on_posix() -> void:
+	if OS.get_name() == "Windows":
+		skip("creating POSIX symlinks is not portable on Windows")
+		return
+	var first := _scratch_dir.path_join("loop-a")
+	var second := _scratch_dir.path_join("loop-b")
+	DirAccess.remove_absolute(first)
+	DirAccess.remove_absolute(second)
+	if OS.execute("ln", ["-s", second, first]) != 0 or OS.execute("ln", ["-s", first, second]) != 0:
+		skip("could not create a POSIX symlink")
+	else:
+		assert_eq(
+			McpTransportCapability._resolve_trusted_path(first.path_join("http-8122.json")),
+			"",
+			"a link chain past the hop bound must fail closed",
+		)
+	DirAccess.remove_absolute(first)
+	DirAccess.remove_absolute(second)
 
 
 func test_rejects_world_writable_posix_ancestor() -> void:
@@ -251,3 +330,34 @@ func _canonical_record() -> String:
 		'{"version":1,"http":"%s","websocket":"%s","instance_nonce":"%s"}'
 		% [HTTP, WEBSOCKET, NONCE]
 	)
+
+
+const _OWNER_ONLY := (
+	FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER | FileAccess.UNIX_EXECUTE_OWNER
+)
+const _WORLD_WRITABLE := (
+	_OWNER_ONLY
+	| FileAccess.UNIX_READ_GROUP
+	| FileAccess.UNIX_WRITE_GROUP
+	| FileAccess.UNIX_EXECUTE_GROUP
+	| FileAccess.UNIX_READ_OTHER
+	| FileAccess.UNIX_WRITE_OTHER
+	| FileAccess.UNIX_EXECUTE_OTHER
+)
+
+
+## A canonical record in a fresh 0700 directory; returns the record path.
+func _private_record_in(directory: String) -> String:
+	DirAccess.make_dir_recursive_absolute(directory)
+	FileAccess.set_unix_permissions(directory, _OWNER_ONLY)
+	var record := directory.path_join("http-8122.json")
+	var file := FileAccess.open(record, FileAccess.WRITE)
+	file.store_string(_canonical_record())
+	file.close()
+	FileAccess.set_unix_permissions(record, FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER)
+	return record
+
+
+func _remove_private_record_in(directory: String) -> void:
+	DirAccess.remove_absolute(directory.path_join("http-8122.json"))
+	DirAccess.remove_absolute(directory)
