@@ -99,24 +99,61 @@ def _capability_directory(environment: dict[str, str]) -> Path:
 def _wait_for_capability_release(directory: Path, timeout: float = 30.0) -> None:
     """A stopped backend releases its capability lock a moment after its ports.
 
-    Windows refuses to delete a file another process still holds, so removing
-    the lock files is the proof that the backend is gone; a lock that stays
-    held past the deadline means a backend outlived the editor.
+    A lock still held past the deadline means a backend outlived the editor.
     """
     deadline = time.monotonic() + timeout
     for lock in sorted(directory.glob("*.lock")) if directory.is_dir() else []:
-        while True:
+        while not _lock_released(lock):
+            remaining = deadline - time.monotonic()
+            support.require(
+                remaining > 0, f"candidate backend still holds {lock.name} after editor exit"
+            )
+            time.sleep(min(0.5, remaining))
+
+
+def _lock_released(lock: Path) -> bool:
+    """Whether no process holds the backend's port-claim lock any more.
+
+    Windows refuses to delete a file another process holds open, so a
+    successful delete is the proof there. On POSIX the backend holds an
+    advisory flock and deleting the file says nothing, so the proof is taking
+    that lock ourselves; the file is removed once we hold it.
+    """
+    if os.name == "nt":
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        with lock.open("rb") as handle:
             try:
-                lock.unlink()
-                break
-            except FileNotFoundError:
-                break
-            except OSError as error:
-                support.require(
-                    time.monotonic() < deadline,
-                    f"candidate backend still holds {lock.name} after editor exit: {error}",
-                )
-                time.sleep(0.5)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return False
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except FileNotFoundError:
+        return True
+    lock.unlink(missing_ok=True)
+    return True
+
+
+def _scrub_private_material(*paths: Path) -> None:
+    """Remove the row's private key and capability records before the
+    best-effort temp cleanup, so a cleanup failure can never retain them."""
+    for path in paths:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        except OSError as error:
+            raise support.ReleaseError(f"could not remove private material {path}: {error}")
+        support.require(not path.exists(), f"private material remains at {path}")
 
 
 def _wait_for_ports_free(*ports: int, timeout: float = 15.0) -> None:
@@ -597,8 +634,9 @@ def exact_a_to_b(
     support.require(_free_port(HTTP_PORT) and _free_port(WS_PORT), "qualification ports are busy")
     output.mkdir(parents=True)
     # A backend that has just been stopped can still hold its capability lock
-    # for a moment on Windows; the wait below covers the normal case and the
-    # cleanup must never fail a row whose evidence is already written.
+    # for a moment; the row waits for that release and removes every private
+    # file itself, so this best-effort cleanup can only ever leave public
+    # scratch (retained wheels, the project) behind on a runner.
     with tempfile.TemporaryDirectory(
         prefix="godot-ai-exact-runtime-", ignore_cleanup_errors=True
     ) as temporary:
@@ -685,7 +723,9 @@ def exact_a_to_b(
                     "update did not download exactly B's canonical signed triple",
                 )
             _wait_for_ports_free(HTTP_PORT, WS_PORT)
-            _wait_for_capability_release(_capability_directory(environment))
+            capability_dir = _capability_directory(environment)
+            _wait_for_capability_release(capability_dir)
+            _scrub_private_material(key, capability_dir)
         result = _read_runtime_result(project)
         support.require(result.get("status") == "passed", "runtime driver did not pass")
         live = project / "addons/godot_ai"
