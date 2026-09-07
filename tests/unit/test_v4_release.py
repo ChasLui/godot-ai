@@ -882,3 +882,20 @@ def test_workspace_mutation_after_source_check_cannot_enter_package(
     )
     with zipfile.ZipFile(archive) as package:
         assert package.read(f"{v4_release.PLUGIN_PREFIX}plugin.gd") == committed
+
+
+def test_windows_refuses_an_output_directory_too_long_for_staging(tmp_path, monkeypatch):
+    # Paths are built before os.name is patched: pathlib picks its flavour
+    # from os.name, and the check must only read the strings.
+    long_destination = tmp_path / ("d" * 220) / "godot-ai-v4-plugin.zip"
+    short_destination = tmp_path / "godot-ai-v4-plugin.zip"
+    original = v4_release.os.name
+    try:
+        monkeypatch.setattr(v4_release.os, "name", "nt")
+        with pytest.raises(v4_release.ReleaseError, match="shorter --output-dir"):
+            v4_release._require_new_destinations((long_destination,))
+        v4_release._require_new_destinations((short_destination,))
+        monkeypatch.setattr(v4_release.os, "name", "posix")
+        v4_release._require_new_destinations((long_destination,))
+    finally:
+        monkeypatch.setattr(v4_release.os, "name", original)

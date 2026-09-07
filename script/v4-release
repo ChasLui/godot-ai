@@ -400,7 +400,21 @@ def _write_zip(path: Path, snapshot: list[tuple[str, bytes]]) -> None:
             archive.writestr(info, data)
 
 
+# Windows without long-path support refuses paths past 260 characters, and the
+# staging directories under the output directory add about 40 more (#945).
+MAX_WINDOWS_OUTPUT_PATH = 200
+
+
 def _require_new_destinations(destinations: tuple[Path, ...]) -> None:
+    for path in destinations:
+        parent = str(path.parent)
+        if os.name == "nt" and len(parent) > MAX_WINDOWS_OUTPUT_PATH:
+            _fail(
+                "output",
+                f"output directory is {len(parent)} characters; Windows without long-path"
+                f" support fails once staging directories are added (limit"
+                f" {MAX_WINDOWS_OUTPUT_PATH}): choose a shorter --output-dir or enable long paths",
+            )
     occupied = [path for path in destinations if os.path.lexists(path)]
     if occupied:
         _fail("output", f"immutable destination already exists: {occupied[0]}")
@@ -653,7 +667,7 @@ def package_release(
     output_dir.mkdir(parents=True, exist_ok=True)
     destinations = tuple(output_dir / name for name in (ASSET_NAME, MANIFEST_NAME))
     _require_new_destinations(destinations)
-    with tempfile.TemporaryDirectory(prefix=".v4-release-", dir=output_dir) as temporary:
+    with tempfile.TemporaryDirectory(prefix=".pkg-", dir=output_dir) as temporary:
         archive, manifest_path = (Path(temporary) / path.name for path in destinations)
         _write_zip(archive, snapshot)
         size, digest = _hash_file(archive, MAX_ARCHIVE_SIZE)
@@ -699,7 +713,7 @@ def sign_release(
     raw = _read_bounded(manifest_path, MAX_MANIFEST_SIZE)
     _validate_manifest(raw, expected)
     signature.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".v4-sign-", dir=signature.parent) as temporary:
+    with tempfile.TemporaryDirectory(prefix=".sig-", dir=signature.parent) as temporary:
         candidate = Path(temporary) / SIGNATURE_NAME
         # OpenSSL's Windows file APIs may reject nested staging paths even
         # when Python supports them. Only the key needs a filesystem argument.
@@ -723,7 +737,7 @@ def build_release(
     destinations = tuple(output_dir / name for name in (ASSET_NAME, MANIFEST_NAME, SIGNATURE_NAME))
     _require_new_destinations(destinations)
     expected = (REPOSITORY, channel, tag, version, source_commit)
-    with tempfile.TemporaryDirectory(prefix=".v4-build-", dir=output_dir) as temporary:
+    with tempfile.TemporaryDirectory(prefix=".bld-", dir=output_dir) as temporary:
         root = Path(temporary)
         archive, manifest = package_release(repo_root, root, channel, tag, version, source_commit)
         signature = sign_release(manifest, root / SIGNATURE_NAME, private_key, expected)
@@ -809,7 +823,7 @@ def build_migration_capsule(
     if sum(len(data) for _path, data in snapshot) > LEGACY_MAX_ARCHIVE_SIZE:
         _fail("migration capsule", "expanded payload exceeds release bound")
 
-    with tempfile.TemporaryDirectory(prefix=".v4-bridge-", dir=output_dir) as temporary:
+    with tempfile.TemporaryDirectory(prefix=".brg-", dir=output_dir) as temporary:
         root = Path(temporary)
         archive = root / LEGACY_ASSET_NAME
         checksum = root / LEGACY_CHECKSUM_NAME
@@ -849,7 +863,7 @@ def build_release_set(
     destinations = tuple(output_dir / name for name in names)
     _require_new_destinations(destinations)
     expected = (REPOSITORY, channel, tag, version, source_commit)
-    with tempfile.TemporaryDirectory(prefix=".v4-release-set-", dir=output_dir) as temporary:
+    with tempfile.TemporaryDirectory(prefix=".set-", dir=output_dir) as temporary:
         root = Path(temporary)
         canonical = build_release(
             repo_root, root, private_key, channel, tag, version, source_commit
