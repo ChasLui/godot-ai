@@ -119,7 +119,7 @@ def test_codex_workers_complete_after_two_ordinary_editor_restarts(tmp_path: Pat
     for boot in range(3):
         log = run_godot_editor(
             project, godot, allow_headless=False, timeout=90, phase=f"boot-{boot}",
-            environment={"GODOT_AI_DISABLE_TELEMETRY": "true"},
+            environment={"GODOT_AI_DISABLE_TELEMETRY": "true", "GODOT_AI_MODE": "user"},
         )
         assert "SCRIPT ERROR:" not in log, log
         result = json.loads((project / "result.json").read_text(encoding="utf-8"))
