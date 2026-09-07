@@ -605,10 +605,15 @@ def test_capability_release_waits_for_a_lock_the_backend_still_holds(monkeypatch
 
 
 def test_capability_directory_follows_the_isolated_environment(monkeypatch, tmp_path):
+    # Build both environments under a patched os.name, then restore it before
+    # anything constructs a Path: pathlib picks its flavour from os.name, and a
+    # mismatch raises on the host (and crashes pytest's failure reporting).
+    original = runtime.os.name
     monkeypatch.setattr(runtime.os, "name", "nt")
     windows = runtime._isolated_environment(tmp_path / "win", "http://127.0.0.1:1/")
     monkeypatch.setattr(runtime.os, "name", "posix")
     posix = runtime._isolated_environment(tmp_path / "posix", "http://127.0.0.1:1/")
+    monkeypatch.setattr(runtime.os, "name", original)
     assert runtime._capability_directory(windows) == (
         tmp_path / "win" / "local-app-data" / "godot-ai" / "capabilities"
     )
