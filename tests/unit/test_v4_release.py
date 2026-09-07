@@ -882,3 +882,59 @@ def test_workspace_mutation_after_source_check_cannot_enter_package(
     )
     with zipfile.ZipFile(archive) as package:
         assert package.read(f"{v4_release.PLUGIN_PREFIX}plugin.gd") == committed
+
+
+def test_windows_refuses_an_output_directory_too_long_for_staging(tmp_path, monkeypatch):
+    # Paths are built before os.name is patched: pathlib picks its flavour
+    # from os.name, and the check must only read the strings.
+    long_dir = tmp_path / ("d" * 220)
+    short_dir = tmp_path / "out"
+    original = v4_release.os.name
+    try:
+        monkeypatch.setattr(v4_release.os, "name", "nt")
+        monkeypatch.setattr(v4_release, "_windows_long_paths_enabled", lambda: False)
+        with pytest.raises(v4_release.ReleaseError, match="shorter --output-dir"):
+            v4_release._require_workable_output_dir(long_dir)
+        v4_release._require_workable_output_dir(short_dir)
+        # Internal staging roots are never measured: only the operator's directory is.
+        v4_release._require_new_destinations((long_dir / ".bld-abc" / "godot-ai-v4-plugin.zip",))
+        # A Windows with long paths enabled (the hosted runners) stages anywhere.
+        monkeypatch.setattr(v4_release, "_windows_long_paths_enabled", lambda: True)
+        v4_release._require_workable_output_dir(long_dir)
+        monkeypatch.setattr(v4_release, "_windows_long_paths_enabled", lambda: False)
+        monkeypatch.setattr(v4_release.os, "name", "posix")
+        v4_release._require_workable_output_dir(long_dir)
+    finally:
+        monkeypatch.setattr(v4_release.os, "name", original)
+
+
+def test_cli_checks_the_output_directory_before_creating_it(tmp_path, monkeypatch, capsys):
+    target = tmp_path / "never-created"
+
+    def refuse(output_dir):
+        assert output_dir == target.resolve()
+        raise v4_release.ReleaseError("output: too long for this Windows")
+
+    monkeypatch.setattr(v4_release, "_require_workable_output_dir", refuse)
+    code = v4_release.main(
+        [
+            "build",
+            "--repo-root",
+            str(tmp_path),
+            "--output-dir",
+            str(target),
+            "--private-key",
+            str(tmp_path / "missing.pem"),
+            "--channel",
+            "stable",
+            "--tag",
+            "v4.0.0",
+            "--version",
+            "4.0.0",
+            "--source-commit",
+            "0" * 40,
+        ]
+    )
+    assert code == 1
+    assert "too long for this Windows" in capsys.readouterr().err
+    assert not target.exists(), "the refusal must come before mkdir"
