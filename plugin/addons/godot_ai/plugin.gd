@@ -791,7 +791,7 @@ func _begin_startup_release() -> void:
 	if _dock != null:
 		_dock.present_update_state({
 			"install_in_flight": true,
-			"button_text": "Migrating client configuration…",
+			"status_text": "Migrating client configuration…",
 			"button_disabled": true,
 			"label_text": "The server remains stopped until configured clients are repinned.",
 			"banner_visible": true,
@@ -869,7 +869,7 @@ func _present_post_update_failure() -> void:
 	if _dock != null:
 		_dock.present_update_state({
 			"install_in_flight": false,
-			"button_text": "Update failed — previous version restored",
+			"status_text": "Update failed — previous version restored",
 			"button_disabled": false,
 			"label_text": error,
 			"banner_visible": true,
@@ -882,7 +882,7 @@ func _present_post_update_complete() -> void:
 	if _dock != null:
 		_dock.present_update_state({
 			"install_in_flight": false,
-			"button_text": "Update complete",
+			"status_text": "Update complete",
 			"button_disabled": true,
 			"label_text": (
 				"Restart AI clients that were connected during the update so they use v%s."
@@ -1474,7 +1474,7 @@ func install_downloaded_update(package: Dictionary) -> void:
 		return
 	_on_update_install_state_changed({
 		"install_in_flight": true,
-		"button_text": "Activating verified update…",
+		"status_text": "Activating verified update…",
 		"button_disabled": true,
 	})
 	var to_version := str(manifest.get("version", ""))
@@ -1513,13 +1513,13 @@ func install_downloaded_update(package: Dictionary) -> void:
 	UpdateInstaller.request_restart.call_deferred()
 
 
-func _fail_update(button_text: String, error: String) -> void:
+func _fail_update(status_text: String, error: String) -> void:
 	if _update_manager != null:
 		_update_manager.discard_downloads()
 	push_error("MCP | %s" % error)
 	_on_update_install_state_changed({
 		"install_in_flight": false,
-		"button_text": button_text,
+		"status_text": status_text,
 		"button_disabled": false,
 	})
 
