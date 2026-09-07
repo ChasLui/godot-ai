@@ -135,6 +135,35 @@ Opt-out creates no telemetry UUID, worker, or files.
 
 ## Documentation and help
 
+### Bazzite / Fedora Atomic Desktop: server exits before publishing capabilities
+
+On Bazzite, `/home` can point to `/var/home` through a symbolic link. Godot AI
+v4 rejects capability-directory paths that pass through symbolic links. This
+can prevent startup with `Last pending: capability_record`. A Bazzite user
+confirmed that selecting the canonical path fixes this ([#993](https://github.com/hi-godot/godot-ai/issues/993)).
+Other Atomic Desktop installations with the same home layout may be affected.
+
+Close Godot and your MCP client, then run this in a terminal as your normal user:
+
+```bash
+export GODOT_AI_CAPABILITY_DIR="$(
+  realpath -m "${XDG_CONFIG_HOME:-$HOME/.config}/godot-ai/capabilities"
+)"
+install -d -m 700 "$GODOT_AI_CAPABILITY_DIR"
+printf 'Using: %s\n' "$GODOT_AI_CAPABILITY_DIR"
+```
+
+Launch **both Godot and your MCP client from that terminal** so the backend and
+`godot-ai attach` inherit the same directory. A desktop launcher does not
+automatically inherit a terminal's `export`; for persistent use, set the same
+canonical path in the launch environment of both applications. Retry the
+connection and check that the server starts and the client connects. Keep the
+directory private to your user; do not copy capability tokens into client
+configuration. This workaround is for Linux; `GODOT_AI_CAPABILITY_DIR` is not
+supported on Windows.
+
+### Reference and support
+
 - [Tools, operations, and resources](docs/TOOLS.md)
 - [Write and run tests for your game](docs/testing.md)
 - [Client configuration details](docs/client-configuration.md)
