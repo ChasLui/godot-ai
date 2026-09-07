@@ -16,6 +16,7 @@ const _CLIENT_SCRIPT_PATHS := [
 	"res://addons/godot_ai/clients/claude_code.gd",
 	"res://addons/godot_ai/clients/claude_desktop.gd",
 	"res://addons/godot_ai/clients/codex.gd",
+	"res://addons/godot_ai/clients/codebuddy.gd",
 	"res://addons/godot_ai/clients/grok.gd",
 	"res://addons/godot_ai/clients/antigravity.gd",
 	"res://addons/godot_ai/clients/cursor.gd",

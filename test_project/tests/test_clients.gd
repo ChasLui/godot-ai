@@ -92,7 +92,7 @@ func test_registry_loads_all_clients() -> void:
 		"Every registered client script must load; got %d of %d" % [ids.size(), McpClientRegistry._CLIENT_SCRIPT_PATHS.size()]
 	)
 	# Each existing client must remain registered for behaviour parity.
-	for required in ["claude_code", "claude_desktop", "codex", "grok", "antigravity", "zoo_code", "hermes", "pi", "deepseek_harness"]:
+	for required in ["claude_code", "claude_desktop", "codex", "grok", "antigravity", "zoo_code", "hermes", "pi", "deepseek_harness", "codebuddy"]:
 		assert_true(McpClientRegistry.has_id(required), "Missing client: %s" % required)
 
 
@@ -6424,3 +6424,26 @@ func test_json_mismatch_reports_whether_the_existing_entry_is_ours() -> void:
 		launch,
 	)
 	assert_false(bool(docs_link.get("owned", true)), "a URL containing our name is not a launch")
+
+
+func test_codebuddy_descriptor_and_stdio_entry() -> void:
+	var c := McpClientRegistry.get_by_id("codebuddy")
+	assert_true(c != null, "CodeBuddy must be registered")
+	assert_eq(c.display_name, "CodeBuddy")
+	assert_eq(c.config_type, "json")
+	assert_eq(c.path_template.get("unix"), "~/.codebuddy/mcp.json")
+	assert_eq(c.path_template.get("windows"), "$USERPROFILE/.codebuddy/mcp.json")
+	assert_eq(c.server_key_path, PackedStringArray(["mcpServers"]))
+	var launch := _test_attach_launch()
+	var entry := McpJsonStrategy.build_entry(c, "http://unused", {
+		"type": "http", "url": "http://old", "headers": {"Authorization": "old"},
+		"env": {"USER_SENTINEL": "preserved"}, "description": "My tools",
+	}, launch)
+	assert_eq(entry.get("type"), "stdio")
+	assert_eq(entry.get("command"), launch.get("command"))
+	assert_eq(entry.get("args"), launch.get("args"))
+	assert_eq(entry.get("env", {}).get("USER_SENTINEL"), "preserved")
+	assert_eq(entry.get("description"), "My tools")
+	assert_false(entry.has("url"))
+	assert_false(entry.has("headers"))
+	assert_true(McpJsonStrategy.verify_entry(c, entry, "http://unused", launch))
