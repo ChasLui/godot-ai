@@ -63,3 +63,31 @@ def test_verify_pypi_waits_for_the_index_to_list_a_fresh_upload(monkeypatch):
     monkeypatch.setattr(promotion, "public_json", forbidden)
     with pytest.raises(urllib.error.HTTPError):
         promotion.verify_pypi(record)  # only a 404 is the index lagging
+
+
+def test_verify_pypi_never_waits_past_its_deadline(monkeypatch):
+    # A controlled clock: each lookup costs 100 s, so the third 404 lands at
+    # 300 s and the wait must clamp to the budget rather than add a poll.
+    record = {"version": "4.0.0", "files": {}}
+    clock = {"now": 0.0}
+    sleeps = []
+    monkeypatch.setattr(promotion.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(promotion.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(promotion, "PYPI_INDEX_WAIT_SECONDS", 300.0)
+    monkeypatch.setattr(promotion, "PYPI_INDEX_POLL_SECONDS", 15.0)
+
+    def lookup(url):
+        clock["now"] += 100.0
+        _not_found(url)
+
+    monkeypatch.setattr(promotion, "public_json", lookup)
+    with pytest.raises(support.ReleaseError, match="still does not list 4.0.0"):
+        promotion.verify_pypi(record)
+    assert sleeps == [15.0, 15.0], "the third lookup hit the deadline; no sleep past it"
+
+    clock["now"] = 0.0
+    sleeps.clear()
+    monkeypatch.setattr(promotion, "PYPI_INDEX_WAIT_SECONDS", 105.0)
+    with pytest.raises(support.ReleaseError, match="still does not list 4.0.0"):
+        promotion.verify_pypi(record)
+    assert sleeps == [5.0], "a sleep is clamped to the remaining budget"

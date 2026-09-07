@@ -212,10 +212,9 @@ def verify_pypi(record: dict[str, Any]) -> dict[str, Any]:
         except urllib.error.HTTPError as exc:
             if exc.code != 404:
                 raise
-            support.require(
-                time.monotonic() < deadline, f"PyPI still does not list {record['version']}"
-            )
-            time.sleep(PYPI_INDEX_POLL_SECONDS)
+            remaining = deadline - time.monotonic()
+            support.require(remaining > 0, f"PyPI still does not list {record['version']}")
+            time.sleep(min(PYPI_INDEX_POLL_SECONDS, remaining))
     urls = metadata["urls"]
     support.require(
         len(urls) == 2
