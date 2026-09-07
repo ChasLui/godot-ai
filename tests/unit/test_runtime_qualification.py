@@ -660,3 +660,14 @@ def test_capability_directory_follows_the_isolated_environment(monkeypatch, tmp_
         tmp_path / "win" / "local-app-data" / "godot-ai" / "capabilities"
     )
     assert runtime._capability_directory(posix) == tmp_path / "posix" / "capabilities"
+
+
+def test_ports_free_wait_reports_elapsed_and_refuses_a_lingering_backend(monkeypatch):
+    answers = iter([False, False, True])
+    monkeypatch.setattr(runtime, "_free_port", lambda port: next(answers))
+    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: None)
+    assert runtime._wait_for_ports_free(8000, timeout=5.0) >= 0.0
+    monkeypatch.setattr(runtime, "_free_port", lambda port: False)
+    with pytest.raises(support.ReleaseError, match="remained live after editor exit"):
+        runtime._wait_for_ports_free(8000, 9500, timeout=0.2)
+    assert runtime.EDITOR_EXIT_TIMEOUT_SECONDS >= 60.0
