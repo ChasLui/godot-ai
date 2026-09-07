@@ -474,7 +474,9 @@ def test_signed_update_restarts_into_matching_live_server(
     # AI client would be. Its bridge loses server A, spawns a backend of the
     # old version into the restart window, and the restarted editor must
     # replace that backend on its own rather than ask the user to.
-    with AttachedAgent(project, http_port, ws_port, capability_dir=capability_dir) as agent:
+    with AttachedAgent(
+        project, http_port, ws_port, capability_dir=capability_dir, environment=environment
+    ) as agent:
         try:
             log = run_godot_editor(
                 project,
