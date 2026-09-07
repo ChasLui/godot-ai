@@ -16,7 +16,7 @@ from typing import Callable
 
 import pytest
 
-from godot_ai.transport.capability import CAPABILITY_DIR_ENV, read_capabilities
+from godot_ai.transport.capability import read_capabilities
 
 ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_ROOT = ROOT / "plugin" / "addons" / "godot_ai"
@@ -572,12 +572,19 @@ class AttachedAgent:
     """
 
     def __init__(
-        self, project_dir: Path, http_port: int, ws_port: int, *, capability_dir: Path
+        self,
+        project_dir: Path,
+        http_port: int,
+        ws_port: int,
+        *,
+        capability_dir: Path,
+        environment: dict[str, str],
     ) -> None:
         self.project_dir = project_dir
         self.http_port = http_port
         self.ws_port = ws_port
         self.capability_dir = capability_dir
+        self.environment = environment
         self.ok = 0
         self.errors: list[str] = []
         self.fault: str = ""
@@ -609,8 +616,10 @@ class AttachedAgent:
                 raise AssertionError("server A never published capabilities")
             await asyncio.sleep(0.25)
         transport = StdioTransport(
-            command=str(Path(sys.executable).parent / "godot-ai"),
+            command=sys.executable,
             args=[
+                "-m",
+                "godot_ai",
                 "attach",
                 "--port",
                 str(self.http_port),
@@ -620,7 +629,7 @@ class AttachedAgent:
             ],
             env={
                 **os.environ,
-                CAPABILITY_DIR_ENV: str(capability_dir),
+                **self.environment,
                 "GODOT_AI_DISABLE_TELEMETRY": "true",
             },
         )

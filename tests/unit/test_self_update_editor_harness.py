@@ -122,3 +122,49 @@ def test_timeout_reports_progress_without_suppressing_failure(
         fixture.run_godot_editor(tmp_path, "godot", allow_headless=True, timeout=20)
     assert stopped == ["terminate", "kill"]
     assert "remaining=4s" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capability_env", ["LOCALAPPDATA", "GODOT_AI_CAPABILITY_DIR"])
+async def test_attached_agent_uses_python_and_the_editors_isolated_environment(
+    monkeypatch, tmp_path, capability_env
+):
+    import fastmcp
+    from fastmcp.client import transports
+
+    environment = {
+        capability_env: str(tmp_path / "private storage"),
+        "CODEX_HOME": str(tmp_path / "codex"),
+        "GODOT_AI_MODE": "user",
+    }
+    monkeypatch.setenv(capability_env, "unrelated-user-storage")
+    agent = fixture.AttachedAgent(
+        tmp_path, 18000, 19500, capability_dir=tmp_path, environment=environment
+    )
+    captured = {}
+    monkeypatch.setattr(fixture, "read_capabilities", lambda *_args: object())
+
+    def transport(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    class Client:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            agent._stop.set()
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(transports, "StdioTransport", transport)
+    monkeypatch.setattr(fastmcp, "Client", Client)
+    await agent._poll()
+
+    assert captured["command"] == fixture.sys.executable
+    assert captured["args"][:3] == ["-m", "godot_ai", "attach"]
+    for name, value in environment.items():
+        assert captured["env"][name] == value
+    assert captured["env"]["GODOT_AI_DISABLE_TELEMETRY"] == "true"
