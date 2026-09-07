@@ -574,3 +574,42 @@ def test_runtime_row_accepts_the_extra_engine_row(monkeypatch, tmp_path):
     output = tmp_path / "output"
     runtime.runtime_row(candidates, python_row, "godot", "4.7.2", output, "ubuntu-latest")
     assert support.read_json(output / "row.json")["godot_version"] == "4.7.2"
+
+
+def test_capability_release_waits_for_a_lock_the_backend_still_holds(monkeypatch, tmp_path):
+    lock = tmp_path / "http-8000.lock"
+    lock.write_text("", encoding="utf-8")
+    attempts = []
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *args, **kwargs):
+        attempts.append(self.name)
+        if len(attempts) < 3:
+            raise PermissionError(32, "The process cannot access the file")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: None)
+    runtime._wait_for_capability_release(tmp_path, timeout=5.0)
+    assert attempts == ["http-8000.lock"] * 3
+    assert not lock.exists()
+
+    lock.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        Path, "unlink", lambda self, *a, **k: (_ for _ in ()).throw(PermissionError(32, "held"))
+    )
+    with pytest.raises(support.ReleaseError, match="still holds http-8000.lock"):
+        runtime._wait_for_capability_release(tmp_path, timeout=0.2)
+    # No directory or no locks: nothing to wait for.
+    runtime._wait_for_capability_release(tmp_path / "missing", timeout=0.1)
+
+
+def test_capability_directory_follows_the_isolated_environment(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime.os, "name", "nt")
+    windows = runtime._isolated_environment(tmp_path / "win", "http://127.0.0.1:1/")
+    monkeypatch.setattr(runtime.os, "name", "posix")
+    posix = runtime._isolated_environment(tmp_path / "posix", "http://127.0.0.1:1/")
+    assert runtime._capability_directory(windows) == (
+        tmp_path / "win" / "local-app-data" / "godot-ai" / "capabilities"
+    )
+    assert runtime._capability_directory(posix) == tmp_path / "posix" / "capabilities"

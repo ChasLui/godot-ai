@@ -88,6 +88,37 @@ def _wait_for_runtime_result(path: Path, timeout: float) -> None:
         time.sleep(0.5)
 
 
+def _capability_directory(environment: dict[str, str]) -> Path:
+    """Where the row's backend publishes capabilities (see _isolated_environment)."""
+    override = environment.get("GODOT_AI_CAPABILITY_DIR", "")
+    if override:
+        return Path(override)
+    return Path(environment["LOCALAPPDATA"]) / "godot-ai" / "capabilities"
+
+
+def _wait_for_capability_release(directory: Path, timeout: float = 30.0) -> None:
+    """A stopped backend releases its capability lock a moment after its ports.
+
+    Windows refuses to delete a file another process still holds, so removing
+    the lock files is the proof that the backend is gone; a lock that stays
+    held past the deadline means a backend outlived the editor.
+    """
+    deadline = time.monotonic() + timeout
+    for lock in sorted(directory.glob("*.lock")) if directory.is_dir() else []:
+        while True:
+            try:
+                lock.unlink()
+                break
+            except FileNotFoundError:
+                break
+            except OSError as error:
+                support.require(
+                    time.monotonic() < deadline,
+                    f"candidate backend still holds {lock.name} after editor exit: {error}",
+                )
+                time.sleep(0.5)
+
+
 def _wait_for_ports_free(*ports: int, timeout: float = 15.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -565,7 +596,12 @@ def exact_a_to_b(
     actual_godot_version = _validate_godot_version(str(executable), godot_version)
     support.require(_free_port(HTTP_PORT) and _free_port(WS_PORT), "qualification ports are busy")
     output.mkdir(parents=True)
-    with tempfile.TemporaryDirectory(prefix="godot-ai-exact-runtime-") as temporary:
+    # A backend that has just been stopped can still hold its capability lock
+    # for a moment on Windows; the wait below covers the normal case and the
+    # cleanup must never fail a row whose evidence is already written.
+    with tempfile.TemporaryDirectory(
+        prefix="godot-ai-exact-runtime-", ignore_cleanup_errors=True
+    ) as temporary:
         work = Path(temporary).resolve()
         project = work / "project"
         project.mkdir()
@@ -649,6 +685,7 @@ def exact_a_to_b(
                     "update did not download exactly B's canonical signed triple",
                 )
             _wait_for_ports_free(HTTP_PORT, WS_PORT)
+            _wait_for_capability_release(_capability_directory(environment))
         result = _read_runtime_result(project)
         support.require(result.get("status") == "passed", "runtime driver did not pass")
         live = project / "addons/godot_ai"
