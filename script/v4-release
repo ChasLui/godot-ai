@@ -421,20 +421,27 @@ def _windows_long_paths_enabled() -> bool:
         return False
 
 
+def _require_workable_output_dir(output_dir: Path) -> None:
+    """Refuse, before anything is created, a directory Windows cannot stage under.
+
+    Only the operator's own --output-dir is measured; the staging roots the
+    build nests under it are internal and add a known ~40 characters.
+    """
+    chosen = str(output_dir)
+    if (
+        os.name == "nt"
+        and len(chosen) > MAX_WINDOWS_OUTPUT_PATH
+        and not _windows_long_paths_enabled()
+    ):
+        _fail(
+            "output",
+            f"output directory is {len(chosen)} characters; Windows without long-path"
+            f" support fails once staging directories are added (limit"
+            f" {MAX_WINDOWS_OUTPUT_PATH}): choose a shorter --output-dir or enable long paths",
+        )
+
+
 def _require_new_destinations(destinations: tuple[Path, ...]) -> None:
-    for path in destinations:
-        parent = str(path.parent)
-        if (
-            os.name == "nt"
-            and len(parent) > MAX_WINDOWS_OUTPUT_PATH
-            and not _windows_long_paths_enabled()
-        ):
-            _fail(
-                "output",
-                f"output directory is {len(parent)} characters; Windows without long-path"
-                f" support fails once staging directories are added (limit"
-                f" {MAX_WINDOWS_OUTPUT_PATH}): choose a shorter --output-dir or enable long paths",
-            )
     occupied = [path for path in destinations if os.path.lexists(path)]
     if occupied:
         _fail("output", f"immutable destination already exists: {occupied[0]}")
@@ -955,6 +962,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     args = _parser().parse_args(argv)
     try:
+        ## The operator's directory is checked once, before any command creates it.
+        output_dir = getattr(args, "output_dir", None)
+        if output_dir is not None:
+            _require_workable_output_dir(Path(output_dir).resolve())
         if args.command == "package":
             outputs = package_release(
                 args.repo_root,
