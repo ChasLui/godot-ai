@@ -156,11 +156,20 @@ def _scrub_private_material(*paths: Path) -> None:
         support.require(not path.exists(), f"private material remains at {path}")
 
 
-def _wait_for_ports_free(*ports: int, timeout: float = 15.0) -> None:
-    deadline = time.monotonic() + timeout
+# The restarted editor writes its result, then quits; its teardown kills the
+# backend tree, and on a loaded Windows runner the whole exit has taken longer
+# than 15 s (qualification run 34079902982) while run 34077763471 cleared it.
+# A backend that never lets go is still refused, just later.
+EDITOR_EXIT_TIMEOUT_SECONDS = 120.0
+
+
+def _wait_for_ports_free(*ports: int, timeout: float = 15.0) -> float:
+    """Seconds until every port was free; refuses when the backend stays up."""
+    started = time.monotonic()
+    deadline = started + timeout
     while time.monotonic() < deadline:
         if all(_free_port(port) for port in ports):
-            return
+            return time.monotonic() - started
         time.sleep(0.1)
     raise support.ReleaseError("candidate backend remained live after editor exit")
 
@@ -722,7 +731,8 @@ def exact_a_to_b(
                     ],
                     "update did not download exactly B's canonical signed triple",
                 )
-            _wait_for_ports_free(HTTP_PORT, WS_PORT)
+            released = _wait_for_ports_free(HTTP_PORT, WS_PORT, timeout=EDITOR_EXIT_TIMEOUT_SECONDS)
+            print(f"backend released its ports {released:.1f}s after the editor's result")
             capability_dir = _capability_directory(environment)
             _wait_for_capability_release(capability_dir)
             _scrub_private_material(key, capability_dir)
