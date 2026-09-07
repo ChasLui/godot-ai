@@ -14,7 +14,7 @@ def test_release_for_tag_finds_the_draft_the_tag_endpoint_hides(monkeypatch):
     draft = {"tag_name": "v4.0.0", "draft": True, "id": 1}
 
     def fake_gh(*args, allow_missing=False):
-        if args[0] == f"{BASE}/releases/tags/v4.0.0":
+        if args[0].startswith(f"{BASE}/releases/tags/"):
             assert allow_missing
             return None
         if args[0] == f"{BASE}/releases?per_page=100":
