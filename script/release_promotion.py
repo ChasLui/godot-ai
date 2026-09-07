@@ -205,13 +205,17 @@ def pypi_preflight(candidate: Path, record: dict[str, Any], pending: Path) -> di
 def verify_pypi(record: dict[str, Any]) -> dict[str, Any]:
     url = f"https://pypi.org/pypi/godot-ai/{record['version']}/json"
     deadline = time.monotonic() + PYPI_INDEX_WAIT_SECONDS
-    metadata = public_json(url, allow_missing=True)
-    while metadata is None:
-        support.require(
-            time.monotonic() < deadline, f"PyPI still does not list {record['version']}"
-        )
-        time.sleep(PYPI_INDEX_POLL_SECONDS)
-        metadata = public_json(url, allow_missing=True)
+    while True:
+        try:
+            metadata = public_json(url)
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            support.require(
+                time.monotonic() < deadline, f"PyPI still does not list {record['version']}"
+            )
+            time.sleep(PYPI_INDEX_POLL_SECONDS)
     urls = metadata["urls"]
     support.require(
         len(urls) == 2
@@ -242,7 +246,7 @@ def _release_for_tag(base: str, tag: str) -> dict[str, Any] | None:
     release = gh(f"{base}/releases/tags/{tag}", allow_missing=True)
     if release is not None:
         return release
-    for row in gh(f"{base}/releases?per_page=100"):
+    for row in gh(f"{base}/releases?per_page=100") or []:
         if row.get("tag_name") == tag:
             return row
     return None
