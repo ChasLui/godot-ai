@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import sys
 import urllib.error
 import urllib.parse
@@ -202,7 +203,15 @@ def pypi_preflight(candidate: Path, record: dict[str, Any], pending: Path) -> di
 
 
 def verify_pypi(record: dict[str, Any]) -> dict[str, Any]:
-    metadata = public_json(f"https://pypi.org/pypi/godot-ai/{record['version']}/json")
+    url = f"https://pypi.org/pypi/godot-ai/{record['version']}/json"
+    deadline = time.monotonic() + PYPI_INDEX_WAIT_SECONDS
+    metadata = public_json(url, allow_missing=True)
+    while metadata is None:
+        support.require(
+            time.monotonic() < deadline, f"PyPI still does not list {record['version']}"
+        )
+        time.sleep(PYPI_INDEX_POLL_SECONDS)
+        metadata = public_json(url, allow_missing=True)
     urls = metadata["urls"]
     support.require(
         len(urls) == 2
@@ -216,6 +225,27 @@ def verify_pypi(record: dict[str, Any]) -> dict[str, Any]:
         verify_public_file(row["url"], expected, {"files.pythonhosted.org"})
         result[row["filename"]] = {"url": row["url"], **expected}
     return result
+
+
+# PyPI's per-version JSON can 404 for a minute or two after an upload while its
+# CDN catches up; the release's own verification runs seconds after the upload.
+PYPI_INDEX_WAIT_SECONDS = 300.0
+PYPI_INDEX_POLL_SECONDS = 15.0
+
+
+def _release_for_tag(base: str, tag: str) -> dict[str, Any] | None:
+    """The release for ``tag``, draft included.
+
+    GitHub's by-tag endpoint sees only published releases; the draft this
+    workflow creates before publishing is found by listing.
+    """
+    release = gh(f"{base}/releases/tags/{tag}", allow_missing=True)
+    if release is not None:
+        return release
+    for row in gh(f"{base}/releases?per_page=100"):
+        if row.get("tag_name") == tag:
+            return row
+    return None
 
 
 def github_preflight(record: dict[str, Any]) -> dict[str, Any] | None:
@@ -233,7 +263,7 @@ def github_preflight(record: dict[str, Any]) -> dict[str, Any] | None:
             },
             "existing release tag does not point to approved source",
         )
-    release = gh(f"{base}/releases/tags/{record['tag']}", allow_missing=True)
+    release = _release_for_tag(base, record["tag"])
     if release is not None:
         support.require(
             ref is not None and not release["prerelease"], "existing release identity mismatch"
