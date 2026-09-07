@@ -327,3 +327,10 @@ don't, and the only path that supports `session_id` pinning.
 | `godot://input_map` | Project input actions and their bound events |
 | `godot://performance` | Performance singleton snapshot |
 | `godot://test/results` | Most recent `test_run` results |
+
+### Test-run cache warning
+
+`test_run` and `test_manage(op="results_get")` include `cache_warning` because
+preloaded GDScript dependencies can remain stale after edits in the same
+editor. Restart the editor before validating dependency changes; see the
+[freshness contract](tool-surface.md#test-run-freshness-after-dependency-edits).
