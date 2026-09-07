@@ -372,28 +372,28 @@ async def test_advisory_lock_wraps_open_failure(
     }
 
 
-def test_advisory_lock_wraps_lock_file_preparation_failure(
+def test_advisory_lock_wraps_seek_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class FailingHandle:
         closed = False
 
         def seek(self, *_args) -> None:
-            raise OSError(errno.EIO, "write failed")
+            raise OSError(errno.EIO, "seek failed")
 
         def close(self) -> None:
             self.closed = True
 
     handle = FailingHandle()
     monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: handle)
-    lock = AdvisoryFileLock(tmp_path / "prepare-error.lock")
+    lock = AdvisoryFileLock(tmp_path / "seek-error.lock")
 
     with pytest.raises(AttachStartupError) as exc_info:
         lock._acquire()
 
     assert handle.closed
     assert exc_info.value.code == "ATTACH_LOCK_ERROR"
-    assert exc_info.value.data["operation"] == "prepare"
+    assert exc_info.value.data["operation"] == "acquire"
     assert exc_info.value.data["errno"] == errno.EIO
 
 
@@ -451,17 +451,33 @@ async def test_cancelled_acquire_ignores_worker_failure(tmp_path: Path) -> None:
     assert not released.is_set()
 
 
-async def test_advisory_lock_is_cross_process(tmp_path: Path) -> None:
+@pytest.mark.parametrize("empty_file", [False, True])
+async def test_advisory_lock_is_cross_process(tmp_path: Path, empty_file: bool) -> None:
     lock_path = tmp_path / "cross-process.lock"
     ready_path = tmp_path / "holder.ready"
     release_path = tmp_path / "holder.release"
     script = """
 import asyncio
+import os
 import sys
 from pathlib import Path
 from godot_ai.attach.ensure import AdvisoryFileLock
 
 async def main():
+    if sys.argv[4] == "empty":
+        # Exercise the native lock independently of AdvisoryFileLock, before
+        # any writer has initialized the file (the first-opener race).
+        with open(sys.argv[1], "a+b") as handle:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            Path(sys.argv[2]).write_text("ready", encoding="utf-8")
+            while not Path(sys.argv[3]).exists():
+                await asyncio.sleep(0.01)
+        return
     async with AdvisoryFileLock(Path(sys.argv[1]), timeout_seconds=5):
         Path(sys.argv[2]).write_text("ready", encoding="utf-8")
         while not Path(sys.argv[3]).exists():
@@ -470,7 +486,10 @@ async def main():
 asyncio.run(main())
 """
     holder = subprocess.Popen(
-        [sys.executable, "-c", script, str(lock_path), str(ready_path), str(release_path)],
+        [
+            sys.executable, "-c", script, str(lock_path), str(ready_path),
+            str(release_path), "empty" if empty_file else "normal",
+        ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -486,13 +505,21 @@ asyncio.run(main())
             _stdout, stderr = await asyncio.to_thread(holder.communicate, timeout=5)
             pytest.fail(f"lock holder did not become ready: {stderr.decode(errors='replace')}")
 
+        if empty_file and os.name == "nt":
+            # Prove that the old pre-lock initialization write is rejected by
+            # Windows, while the contender below must report ordinary contention.
+            assert lock_path.stat().st_size == 0
+            with lock_path.open("a+b", buffering=0) as handle:
+                with pytest.raises(PermissionError):
+                    handle.write(b"\0")
+
         contender = AdvisoryFileLock(lock_path, timeout_seconds=0.1, poll_seconds=0.01)
         with pytest.raises(AttachStartupError) as exc_info:
             await contender.__aenter__()
-        assert exc_info.value.code == "ATTACH_LOCK_TIMEOUT"
+        assert exc_info.value.code == "ATTACH_LOCK_TIMEOUT", exc_info.value
 
         release_path.write_text("release", encoding="utf-8")
-        await asyncio.to_thread(holder.wait, 5)
+        assert await asyncio.to_thread(holder.wait, 5) == 0
         async with AdvisoryFileLock(lock_path, timeout_seconds=1):
             pass
     finally:
@@ -853,7 +880,7 @@ async def test_three_concurrent_bridges_with_two_version_pins_choose_one_backend
     compatible = [result for result in results if isinstance(result, BackendStatus)]
     incompatible = [result for result in results if isinstance(result, AttachStartupError)]
     assert state["spawns"] == 1
-    assert len(compatible) == 2
+    assert len(compatible) == 2, results
     assert len(incompatible) == 1
     assert incompatible[0].code == "NEW_CLIENT_SESSION_REQUIRED"
     assert "cannot be repaired" in incompatible[0].hint
