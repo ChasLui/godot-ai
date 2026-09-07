@@ -157,7 +157,7 @@ var _drift_label: Label
 ## tests/unit/test_editor_focus_refocus.py locates the notification handler
 ## by first occurrence of that token.)
 var _uv_recheck_pending := false
-## Handles for the Setup section's "Server" row. `_update_status` keeps
+## Handles for the Setup section's "Server" row. `_update_status_label` keeps
 ## the label text/color in sync with `McpConnection.server_version` so the
 ## dock reports the TRUE running server version, not the plugin's
 ## expected version. See #174 follow-up — a plugin upgrade via self-
@@ -165,7 +165,7 @@ var _uv_recheck_pending := false
 ## (foreign-port branch never sets `_server_pid`, so `_stop_server`
 ## can't kill it); the line has to show the mismatch honestly.
 var _setup_server_label: Label
-## Last rendered server-version string. `_update_status` runs every
+## Last rendered server-version string. `_update_status_label` runs every
 ## frame; early-outs text repaint when nothing changed. Empty means
 ## "no line rendered yet" (dev-checkout branch doesn't render a
 ## user-mode Server line).
@@ -248,7 +248,12 @@ const STARTUP_GRACE_MSEC := 60 * 1000
 # installation remain root-owned and arrive here as copied presentation state.
 var _update_banner: VBoxContainer
 var _update_label: Label
+var _update_status_label: Label
 var _update_btn: Button
+## The button is an action, never a status line: progress and failure text
+## goes to `_update_status_label`, and the button only enables or disables.
+const _UPDATE_ACTION_TEXT := "Update"
+const _UPDATE_LABEL_COLOR := Color(1.0, 0.85, 0.3)
 var _post_update_action := ""
 
 func _ready() -> void:
@@ -355,7 +360,7 @@ func _build_ui() -> void:
 	status_row.add_child(icon_center)
 
 	_status_label = Label.new()
-	# Start in grace state — _update_status will take over on the next frame
+	# Start in grace state — _update_status_label will take over on the next frame
 	# once the connection is available. Never show bare "Disconnected" on
 	# first paint because that's misleading while the server is still
 	# spinning up.
@@ -453,7 +458,7 @@ func _build_ui() -> void:
 
 	_update_label = Label.new()
 	_update_label.add_theme_font_size_override("font_size", 15)
-	_update_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	_update_label.add_theme_color_override("font_color", _UPDATE_LABEL_COLOR)
 	## Wrap long banner text (e.g. the < 4.5 support-floor guidance) instead
 	## of letting a single line stretch the whole dock wide. The dock is a
 	## fixed-width side panel, so constrain horizontally and wrap.
@@ -462,11 +467,19 @@ func _build_ui() -> void:
 	_update_label.custom_minimum_size = Vector2(0, 0)
 	_update_banner.add_child(_update_label)
 
+	_update_status_label = Label.new()
+	_update_status_label.add_theme_font_size_override("font_size", 13)
+	_update_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_update_status_label.size_flags_horizontal = Control.SIZE_FILL
+	_update_status_label.custom_minimum_size = Vector2(0, 0)
+	_update_status_label.visible = false
+	_update_banner.add_child(_update_status_label)
+
 	var update_btn_row := HBoxContainer.new()
 	update_btn_row.add_theme_constant_override("separation", 6)
 
 	_update_btn = Button.new()
-	_update_btn.text = "Update"
+	_update_btn.text = _UPDATE_ACTION_TEXT
 	_update_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_update_btn.pressed.connect(_on_update_pressed)
 	update_btn_row.add_child(_update_btn)
@@ -1207,7 +1220,7 @@ func _apply_dev_mode_visibility() -> void:
 	# (so users can install uv from the dock) — but not while the server
 	# launch is still settling (#744): mid-launch a red "uv: not found" row
 	# is usually a transient probe failure (#739) or irrelevant because the
-	# launch is succeeding via the .venv or system tiers. `_update_status`
+	# launch is succeeding via the .venv or system tiers. `_update_status_label`
 	# re-applies visibility on every status transition, so the section
 	# appears the moment the launch outcome makes it relevant.
 	var is_dev := ClientConfigurator.is_dev_checkout()
@@ -1228,7 +1241,7 @@ static func _setup_section_should_show(
 ## True while the server launch outcome is still unknown: not connected,
 ## no terminal diagnosis yet, and the startup grace window ("Starting
 ## server…" in the status row) is still running. Mirrors the status-label
-## logic in `_update_status` so the Setup section and the amber status
+## logic in `_update_status_label` so the Setup section and the amber status
 ## text agree on what "still launching" means.
 func _server_launch_pending() -> bool:
 	if _last_connected:
@@ -2747,21 +2760,38 @@ static func update_confirm_text(version: String) -> String:
 func present_update_check(result: Dictionary) -> void:
 	_update_candidate_version = String(result.get("version", ""))
 	_update_label.text = String(result.get("label_text", ""))
+	_update_label.add_theme_color_override("font_color", _UPDATE_LABEL_COLOR)
 	_update_banner.visible = true
+	## A fresh candidate re-arms the action. The restarted editor after an
+	## update shows "Update complete" with the button disabled; a newer release
+	## found later in that same session must still be installable. A running
+	## install or a pending post-update action keeps ownership of the button.
+	if _update_install_in_flight or not _post_update_action.is_empty():
+		return
+	_set_update_status("")
+	if _update_btn != null:
+		_update_btn.text = _UPDATE_ACTION_TEXT
+		_update_btn.disabled = false
 
 
 ## Apply only the keys present so the manager can ship partial updates
-## (e.g. button-text-only during the download phase) without clobbering
-## banner state.
+## (e.g. status-only during the download phase) without clobbering banner
+## state. `button_text` names an action ("Retry client migration");
+## progress and failure messages arrive as `status_text` and never replace
+## the button label.
 func present_update_state(state: Dictionary) -> void:
 	if state.has("post_update_action"):
 		_post_update_action = String(state["post_update_action"])
+		if _post_update_action.is_empty() and _update_btn != null:
+			_update_btn.text = _UPDATE_ACTION_TEXT
 	if state.has("install_in_flight"):
 		_update_install_in_flight = bool(state["install_in_flight"])
 	if state.has("button_text") and _update_btn != null:
 		_update_btn.text = String(state["button_text"])
 	if state.has("button_disabled") and _update_btn != null:
 		_update_btn.disabled = bool(state["button_disabled"])
+	if state.has("status_text"):
+		_set_update_status(String(state["status_text"]))
 	if state.has("label_text") and _update_label != null:
 		_update_label.text = String(state["label_text"])
 	if state.has("banner_visible") and _update_banner != null:
@@ -2769,3 +2799,10 @@ func present_update_state(state: Dictionary) -> void:
 	if String(state.get("outcome", "")) == "success" and _update_label != null:
 		## Visual confirmation for successful terminal update states.
 		_update_label.add_theme_color_override("font_color", Color.GREEN)
+
+
+func _set_update_status(text: String) -> void:
+	if _update_status_label == null:
+		return
+	_update_status_label.text = text
+	_update_status_label.visible = not text.is_empty()

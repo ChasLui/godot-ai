@@ -866,6 +866,74 @@ func test_self_update_in_progress_blocks_request_refresh() -> void:
 	_dock.present_update_state({"install_in_flight": false})
 
 
+func test_update_status_text_never_replaces_the_button_action() -> void:
+	## The Update button is an action, not a status line (2026-09-07 live
+	## update review). Progress and failure text goes to the status label
+	## and the button only enables or disables.
+	_dock._build_ui()
+	_dock.present_update_check({"version": "4.0.3", "label_text": "Update available: v4.0.3"})
+	for status in ["Downloading…", "Update preparation failed", "Activating verified update…"]:
+		_dock.present_update_state({
+			"install_in_flight": true, "status_text": status, "button_disabled": true,
+		})
+		assert_eq(_dock._update_btn.text, "Update", status)
+		assert_eq(_dock._update_status_label.text, status)
+		assert_true(_dock._update_status_label.visible, status)
+		assert_true(_dock._update_btn.disabled, status)
+	_dock.present_update_state({"install_in_flight": false, "status_text": "", "button_disabled": false})
+	assert_false(_dock._update_status_label.visible)
+	assert_false(_dock._update_btn.disabled)
+	assert_eq(_dock._update_btn.text, "Update")
+
+
+func test_new_update_candidate_rearms_the_button_after_a_completed_update() -> void:
+	## The restarted editor after an update shows "Update complete" with the
+	## button disabled. A newer release found later in that same session (the
+	## fleet's 4.0.0 -> 4.0.2 morning) must be installable without another
+	## editor restart.
+	_dock._build_ui()
+	_dock.present_update_state({
+		"install_in_flight": false,
+		"status_text": "Update complete",
+		"button_disabled": true,
+		"label_text": "Restart AI clients that were connected during the update so they use v4.0.2.",
+		"banner_visible": true,
+		"post_update_action": "",
+		"outcome": "success",
+	})
+	assert_true(_dock._update_btn.disabled)
+	assert_eq(_dock._update_label.get_theme_color("font_color"), Color.GREEN)
+	_dock.present_update_check({"version": "4.0.3", "label_text": "Update available: v4.0.3"})
+	assert_false(_dock._update_btn.disabled)
+	assert_eq(_dock._update_btn.text, "Update")
+	assert_eq(_dock._update_candidate_version, "4.0.3")
+	assert_eq(_dock._update_label.text, "Update available: v4.0.3")
+	assert_false(_dock._update_status_label.visible)
+	assert_true(_dock._update_label.get_theme_color("font_color") != Color.GREEN)
+
+
+func test_update_candidate_does_not_rearm_during_install_or_pending_action() -> void:
+	_dock._build_ui()
+	_dock.present_update_state({
+		"install_in_flight": true, "status_text": "Downloading…", "button_disabled": true,
+	})
+	_dock.present_update_check({"version": "4.0.3", "label_text": "Update available: v4.0.3"})
+	assert_true(_dock._update_btn.disabled, "a running install keeps the button disabled")
+	assert_eq(_dock._update_status_label.text, "Downloading…")
+	_dock.present_update_state({"install_in_flight": false, "button_disabled": false})
+	_dock.present_update_state({
+		"install_in_flight": false,
+		"button_text": "Retry client migration",
+		"button_disabled": false,
+		"post_update_action": "retry",
+	})
+	_dock.present_update_check({"version": "4.0.4", "label_text": "Update available: v4.0.4"})
+	assert_eq(_dock._update_btn.text, "Retry client migration",
+		"a pending post-update action owns the button")
+	_dock.present_update_state({"post_update_action": ""})
+	assert_eq(_dock._update_btn.text, "Update")
+
+
 func test_drain_helper_does_not_poison_shutdown_flag() -> void:
 	## `McpUpdateManager._install_zip` calls `_drain_client_status_refresh_workers`
 	## (via `_drain_dock_workers`) to clear any in-flight refresh worker
