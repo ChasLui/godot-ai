@@ -140,15 +140,61 @@ func test_episode_snapshot_never_exposes_transport_capabilities() -> void:
 	assert_false(launch.has("ws_capability"))
 
 
-func test_authenticated_endpoint_loss_blocks_without_recovery_loop() -> void:
+func test_authenticated_endpoint_loss_blocks_then_schedules_a_bounded_reprobe() -> void:
 	var manager := _manager()
 	_complete_adoption(manager)
 	manager.transport_lost("endpoint vanished")
 	var snapshot := manager.get_status_dict()
 	assert_eq(snapshot.episode_state, Lifecycle.BLOCKED)
 	assert_eq(manager.episode_snapshot().reason, "endpoint_lost")
-	assert_true(snapshot.connection_blocked)
+	assert_true(snapshot.connection_blocked, "the connection is revoked until the server re-proves itself")
 	assert_false(snapshot.can_recover_incompatible)
+	assert_eq(int(snapshot.recovery_attempt), 1)
+	assert_contains(str(snapshot.message), "attempt 1 of 5")
+	## The scheduled attempt runs the ordinary start path: probe first.
+	var episode_id := int(manager.episode_snapshot().id)
+	assert_true(manager.recover_lost_endpoint(episode_id))
+	var episode := manager.episode_snapshot()
+	assert_eq(episode.state, Lifecycle.STARTING)
+	assert_eq(episode.phase, Lifecycle.PROBE)
+	## A stale timer (older episode) never disturbs a newer start.
+	assert_false(manager.recover_lost_endpoint(episode_id))
+
+
+func test_endpoint_reprobe_for_an_owned_server_stops_the_exact_grant_first() -> void:
+	var manager := _manager()
+	_complete_owned_start(manager)
+	manager.transport_lost("child exited")
+	assert_true(manager.recover_lost_endpoint(int(manager.episode_snapshot().id)))
+	var episode := manager.episode_snapshot()
+	assert_eq(episode.state, Lifecycle.STOPPING)
+	assert_eq(episode.after_stop, "start")
+
+
+func test_endpoint_reprobe_gives_up_after_its_budget() -> void:
+	var manager := _manager()
+	manager._endpoint_recovery_attempts = Lifecycle.ENDPOINT_RECOVERY_DELAYS_SECONDS.size()
+	## Still inside the stability window when READY arrives: the budget carries over.
+	manager._endpoint_recovery_started_msec = Time.get_ticks_msec()
+	_complete_adoption(manager)
+	manager.transport_lost("endpoint vanished")
+	var snapshot := manager.get_status_dict()
+	assert_eq(snapshot.episode_state, Lifecycle.BLOCKED)
+	assert_contains(str(snapshot.message), "gave up after 5 attempts")
+	assert_eq(int(snapshot.recovery_attempt), 5)
+	assert_false(manager.recover_lost_endpoint(int(manager.episode_snapshot().id)),
+		"no attempt is left; the dock's Restart is the route")
+	assert_eq(manager.episode_snapshot().state, Lifecycle.BLOCKED)
+
+
+func test_endpoint_reprobe_budget_resets_once_the_server_holds() -> void:
+	var manager := _manager()
+	manager._endpoint_recovery_attempts = 3
+	manager._endpoint_recovery_started_msec = Time.get_ticks_msec() - Lifecycle.ENDPOINT_RECOVERY_STABLE_MS
+	_complete_adoption(manager)
+	assert_eq(int(manager.get_status_dict().recovery_attempt), 0, "a server that held for a minute earns a fresh budget")
+	manager.transport_lost("endpoint vanished")
+	assert_eq(int(manager.get_status_dict().recovery_attempt), 1)
 
 
 func test_owned_endpoint_loss_stops_exact_grant_before_new_start() -> void:
