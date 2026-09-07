@@ -14,6 +14,12 @@ extends "res://addons/godot_ai/handlers/command_handler.gd"
 
 const ErrorCodes := preload("res://addons/godot_ai/utils/error_codes.gd")
 
+const CACHE_WARNING := (
+	"Preloaded GDScript dependencies may be stale after source edits. "
+	+ "Restart the editor before treating this run as validation of dependency changes. "
+	+ "ResourceLoader cache modes do not invalidate GDScript's preload cache."
+)
+
 ## Clamp bounds for the server-provided ``timeout_budget_sec`` param. The
 ## floor is purely defensive (a malformed or buggy server value must not
 ## abort every run instantly); the param is not user-facing.
@@ -106,7 +112,7 @@ func run_tests(params: Dictionary) -> Dictionary:
 				discovery.errors.size(),
 				", ".join(discovery.errors),
 			]
-		var no_suites := {"error": msg, "total": 0, "load_errors": discovery.errors}
+		var no_suites := {"error": msg, "total": 0, "load_errors": discovery.errors, "cache_warning": CACHE_WARNING}
 		## Keep the edited_scene annotation on the no-suites error payload too,
 		## so the response contract is consistent across every return path.
 		_annotate_edited_scene(no_suites)
@@ -170,6 +176,7 @@ func _map_outcome(
 	started_ms: int,
 	budget_sec: float,
 ) -> Dictionary:
+	results["cache_warning"] = CACHE_WARNING
 	var elapsed_ms := Time.get_ticks_msec() - started_ms
 	match outcome:
 		"completed":
@@ -288,7 +295,9 @@ func _annotate_edited_scene(results: Dictionary) -> void:
 
 func get_test_results(params: Dictionary) -> Dictionary:
 	var verbose: bool = params.get("verbose", false)
-	return {"data": _runner.get_results(verbose)}
+	var results := _runner.get_results(verbose)
+	results["cache_warning"] = CACHE_WARNING
+	return {"data": results}
 
 
 ## Returns {"suites": Array, "errors": Array[String], "outcome": String}.
