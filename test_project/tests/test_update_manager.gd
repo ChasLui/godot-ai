@@ -59,6 +59,82 @@ func suite_name() -> String:
 	return "update_manager"
 
 
+class DownloadProbe extends Manager:
+	var downloads_started := 0
+
+	func _download_next() -> void:
+		downloads_started += 1
+
+
+static func _candidate_release() -> Dictionary:
+	return {
+		"urls": {},
+		"sizes": {},
+		"channel": "stable",
+		"tag": "v4.1.0",
+		"version": "4.1.0",
+	}
+
+
+static func _record_states(manager: Manager) -> Array[Dictionary]:
+	var states: Array[Dictionary] = []
+	manager.install_state_changed.connect(func(state: Dictionary) -> void:
+		states.append(state)
+	)
+	return states
+
+
+## The plugin takes the update lock before the download and releases it, and
+## resumes any quiesced client work, only when an install state says the
+## install is over. A failure that stays silent about that leaves lock.json
+## behind for the rest of the editor session (seen live after a 4.0.0
+## "download failed (302)" on 2026-09-07).
+func test_failed_download_reports_the_install_as_over() -> void:
+	var manager := Manager.new()
+	var states := _record_states(manager)
+	manager._download_root = OS.get_user_data_dir().path_join("godot_ai_test_never_created")
+	manager._fail_download("download failed (302)")
+	assert_eq(states.size(), 1)
+	assert_true(states[0].has("install_in_flight"), "a failed download must say the install is over")
+	assert_false(bool(states[0]["install_in_flight"]))
+	assert_false(bool(states[0]["button_disabled"]))
+	assert_eq(manager._download_root, "")
+	manager.free()
+
+
+func test_refused_install_reports_the_install_as_over() -> void:
+	for preflight in [{"ok": false}, {"ok": true, "download_root": "relative/path"}]:
+		var manager := Manager.new()
+		manager._release = _candidate_release()
+		var states := _record_states(manager)
+		manager.start_install(preflight)
+		assert_eq(states.size(), 1, str(preflight))
+		assert_true(states[0].has("install_in_flight"), str(preflight))
+		assert_false(bool(states[0]["install_in_flight"]), str(preflight))
+		manager.free()
+
+
+func test_download_start_and_repeat_click_keep_the_install_in_flight() -> void:
+	var root := OS.get_user_data_dir().path_join("godot_ai_test_download_root")
+	assert_eq(DirAccess.make_dir_recursive_absolute(root), OK)
+	var manager := DownloadProbe.new()
+	manager._release = _candidate_release()
+	var states := _record_states(manager)
+	manager.start_install({"ok": true, "download_root": root})
+	assert_eq(manager.downloads_started, 1)
+	assert_eq(states.size(), 1)
+	assert_true(bool(states[0].get("install_in_flight", false)), "Downloading must hold the lock")
+	assert_true(bool(states[0]["button_disabled"]))
+	## A second click while the first download is queued must not report the
+	## install as over: that would release the lock under the running download.
+	manager.start_install({"ok": true, "download_root": root})
+	assert_eq(manager.downloads_started, 1)
+	assert_eq(states.size(), 2)
+	assert_true(bool(states[1].get("install_in_flight", true)))
+	manager.free()
+	DirAccess.remove_absolute(root)
+
+
 static func _asset(name: String, size: int = 32) -> Dictionary:
 	return {
 		"name": name,
