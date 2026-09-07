@@ -37,6 +37,18 @@ const DEFAULT_PROBE_TIMEOUT_MS := 800
 const DEFAULT_PROVE_TIMEOUT_MS := 180_000
 const LAUNCH_FINGERPRINT_TIMEOUT_MS := 15_000
 const REPLACEMENT_TTL_MS := 15_000
+## An authenticated endpoint that drops (a late keepalive, a server restart)
+## is re-probed automatically with this backoff, each attempt re-proving the
+## server exactly as a start does; after the last one the block stays until
+## the dock's Restart (#962). A server that stays ready this long earns a
+## fresh budget, so a flapping one cannot loop forever.
+const ENDPOINT_RECOVERY_DELAYS_SECONDS: Array[float] = [1.0, 2.0, 4.0, 8.0, 16.0]
+const ENDPOINT_RECOVERY_STABLE_MS := 60_000
+
+var _endpoint_recovery_attempts := 0
+var _endpoint_recovery_started_msec := 0
+## The episode whose re-probe is scheduled; 0 when none is pending.
+var _endpoint_recovery_pending_episode := 0
 const MAX_STATUS_BODY_BYTES := 8 * 1024
 
 var _episode: Dictionary = _dormant_episode(0)
@@ -277,7 +289,55 @@ func transport_lost(reason := "Authenticated server endpoint was lost.") -> void
 	if str(_episode.get("state")) != READY:
 		return
 	_transport = null
-	_block("endpoint_lost", reason)
+	var limit := ENDPOINT_RECOVERY_DELAYS_SECONDS.size()
+	if _endpoint_recovery_attempts >= limit:
+		_block(
+			"endpoint_lost",
+			"%s Automatic re-probing gave up after %d attempts; click Restart." % [reason, limit],
+		)
+		return
+	_endpoint_recovery_attempts += 1
+	var delay := float(ENDPOINT_RECOVERY_DELAYS_SECONDS[_endpoint_recovery_attempts - 1])
+	_block(
+		"endpoint_lost",
+		"%s Re-probing in %ds (attempt %d of %d)." % [
+			reason, int(delay), _endpoint_recovery_attempts, limit,
+		],
+	)
+	print(
+		"MCP | server endpoint lost (%s); re-probing in %ds (attempt %d of %d)"
+		% [reason, int(delay), _endpoint_recovery_attempts, limit]
+	)
+	_endpoint_recovery_pending_episode = int(_episode.get("id", 0))
+	if bool(_plan.get("automatic_effects", true)):
+		_recover_lost_endpoint_after(delay, _endpoint_recovery_pending_episode)
+
+
+## The scheduled re-probe. Only the episode that lost its endpoint, and only
+## while its attempt is still pending, may start it: a dock Restart or a
+## newer loss in between supersedes the timer.
+func recover_lost_endpoint(episode_id: int) -> bool:
+	if episode_id <= 0 or episode_id != _endpoint_recovery_pending_episode:
+		return false
+	if episode_id != int(_episode.get("id", -1)):
+		_endpoint_recovery_pending_episode = 0
+		return false
+	if str(_episode.get("state")) != BLOCKED or str(_episode.get("reason")) != "endpoint_lost":
+		_endpoint_recovery_pending_episode = 0
+		return false
+	_endpoint_recovery_pending_episode = 0
+	_endpoint_recovery_started_msec = Time.get_ticks_msec()
+	start_server()
+	return str(_episode.get("state")) != BLOCKED
+
+
+func _recover_lost_endpoint_after(delay_seconds: float, episode_id: int) -> void:
+	var tree := Engine.get_main_loop()
+	if tree is SceneTree:
+		await (tree as SceneTree).create_timer(delay_seconds).timeout
+	if not is_instance_valid(self):
+		return
+	recover_lost_endpoint(episode_id)
 
 
 func complete_effect(episode_id: int, effect: String, result: Dictionary) -> bool:
@@ -433,6 +493,13 @@ func _ready(kind: String, transport, version: String) -> void:
 		_block("invalid_transport", "The server returned invalid transport authority.")
 		return
 	_transport = transport
+	## A recovery that reaches READY spends budget until the server has held
+	## for a while; a fresh start, or a stable server, gets the full budget.
+	if (
+		_endpoint_recovery_started_msec == 0
+		or Time.get_ticks_msec() - _endpoint_recovery_started_msec >= ENDPOINT_RECOVERY_STABLE_MS
+	):
+		_endpoint_recovery_attempts = 0
 	_episode["state"] = READY
 	_episode["phase"] = ""
 	_episode["ready_kind"] = kind
@@ -1178,6 +1245,8 @@ func get_status_dict() -> Dictionary:
 		"conflict_port": int(_episode.get("blocked_target", {}).get("port", 0)),
 		"conflict_version": str(_episode.get("blocked_target", {}).get("version", "")),
 		"keep_alive": bool(_plan.get("keep_alive", false)),
+		"recovery_attempt": _endpoint_recovery_attempts,
+		"recovery_limit": ENDPOINT_RECOVERY_DELAYS_SECONDS.size(),
 	}
 
 
