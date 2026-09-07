@@ -290,7 +290,47 @@ def github_preflight(record: dict[str, Any]) -> dict[str, Any] | None:
     return release
 
 
-def publish_github(candidate: Path, record: dict[str, Any]) -> dict[str, Any]:
+def release_notes(record: dict[str, Any], previous: str) -> str:
+    """The GitHub Release body: pinned guide links, then GitHub's generated notes.
+
+    The migration guide and CHANGELOG.md are linked at the promoted source
+    commit so the notes describe exactly the published tree. The generated
+    "What's Changed" list covers the previous published tag to that commit.
+    Release notes are mutable and are not a trust anchor (the signed manifest
+    is), so a notes-generation failure falls back to the links alone instead
+    of refusing the release.
+    """
+    blob = f"https://github.com/{support.REPOSITORY}/blob/{record['source']}"
+    lines = [
+        f"See the version-pinned migration guide: {blob}/docs/v4-migration.md",
+        f"Changelog: {blob}/CHANGELOG.md",
+    ]
+    try:
+        generated = gh(
+            "--method",
+            "POST",
+            f"repos/{support.REPOSITORY}/releases/generate-notes",
+            "-f",
+            f"tag_name={record['tag']}",
+            "-f",
+            f"target_commitish={record['source']}",
+            "-f",
+            f"previous_tag_name=v{previous}",
+        )
+        body = generated.get("body", "") if isinstance(generated, dict) else ""
+    except support.ReleaseError as exc:
+        print(
+            f"release notes: GitHub did not generate notes ({exc}); "
+            "publishing the pinned links alone",
+            file=sys.stderr,
+        )
+        body = ""
+    if isinstance(body, str) and body.strip():
+        lines += ["", body.strip()]
+    return "\n".join(lines) + "\n"
+
+
+def publish_github(candidate: Path, record: dict[str, Any], previous: str) -> dict[str, Any]:
     verify_pypi(record)
     release = github_preflight(record)
     base = f"repos/{support.REPOSITORY}"
@@ -320,8 +360,7 @@ def publish_github(candidate: Path, record: dict[str, Any]) -> dict[str, Any]:
             "-f",
             f"name=Godot AI {record['version']}",
             "-f",
-            "body=See the version-pinned migration guide: "
-            f"https://github.com/{support.REPOSITORY}/blob/{record['source']}/docs/v4-migration.md",
+            "body=" + release_notes(record, previous),
         )
     existing = {row["name"] for row in release["assets"]}
     missing = sorted(support.RELEASE_NAMES - existing)
@@ -409,7 +448,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "verify-pypi":
             result["pypi"] = verify_pypi(record)
         elif args.command == "github":
-            result["github"] = publish_github(args.root / "a", record)
+            result["github"] = publish_github(args.root / "a", record, args.previous)
             result["pypi"] = verify_pypi(record)
         args.output.write_bytes(support.canonical(result))
     except (support.ReleaseError, OSError, ValueError, subprocess.CalledProcessError) as exc:

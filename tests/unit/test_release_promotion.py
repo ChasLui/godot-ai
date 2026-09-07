@@ -91,3 +91,112 @@ def test_verify_pypi_never_waits_past_its_deadline(monkeypatch):
     with pytest.raises(support.ReleaseError, match="still does not list 4.0.0"):
         promotion.verify_pypi(record)
     assert sleeps == [5.0], "a sleep is clamped to the remaining budget"
+
+
+def test_release_notes_pin_the_guides_at_the_source_and_append_generated_notes(monkeypatch):
+    record = {"tag": "v4.0.3", "source": "abc123"}
+    calls = []
+
+    def fake_gh(*args, allow_missing=False):
+        calls.append(args)
+        return {
+            "body": "## What's Changed\n* fix: x by @y in https://github.com/hi-godot/godot-ai/pull/1\n\n"
+        }
+
+    monkeypatch.setattr(promotion, "gh", fake_gh)
+    body = promotion.release_notes(record, "4.0.2")
+
+    assert calls == [
+        (
+            "--method",
+            "POST",
+            f"{BASE}/releases/generate-notes",
+            "-f",
+            "tag_name=v4.0.3",
+            "-f",
+            "target_commitish=abc123",
+            "-f",
+            "previous_tag_name=v4.0.2",
+        )
+    ]
+    blob = f"https://github.com/{support.REPOSITORY}/blob/abc123"
+    assert body.splitlines() == [
+        f"See the version-pinned migration guide: {blob}/docs/v4-migration.md",
+        f"Changelog: {blob}/CHANGELOG.md",
+        "",
+        "## What's Changed",
+        "* fix: x by @y in https://github.com/hi-godot/godot-ai/pull/1",
+    ]
+    assert body.endswith("\n")
+
+
+def test_release_notes_fall_back_to_the_links_when_generation_fails(monkeypatch, capsys):
+    def failing_gh(*args, allow_missing=False):
+        raise support.ReleaseError("GitHub API request failed: HTTP 422")
+
+    monkeypatch.setattr(promotion, "gh", failing_gh)
+    body = promotion.release_notes({"tag": "v4.0.3", "source": "abc123"}, "4.0.2")
+
+    blob = f"https://github.com/{support.REPOSITORY}/blob/abc123"
+    assert body == (
+        f"See the version-pinned migration guide: {blob}/docs/v4-migration.md\n"
+        f"Changelog: {blob}/CHANGELOG.md\n"
+    )
+    assert "did not generate notes" in capsys.readouterr().err
+
+    monkeypatch.setattr(promotion, "gh", lambda *a, allow_missing=False: {"body": "   \n"})
+    assert promotion.release_notes({"tag": "v4.0.3", "source": "abc123"}, "4.0.2") == body
+
+
+def test_publish_github_creates_the_draft_with_the_composed_notes(monkeypatch, tmp_path):
+    files = {f"release/{name}": {"size": 1, "sha256": "0" * 64} for name in support.RELEASE_NAMES}
+    record = {"version": "4.0.3", "tag": "v4.0.3", "source": "abc123", "files": files}
+    create_values = []
+    state = {"release": None}
+
+    def fake_gh(*args, allow_missing=False):
+        if args[0] == f"{BASE}/git/ref/tags/v4.0.3":
+            return None
+        if args[:3] == ("--method", "POST", f"{BASE}/git/refs"):
+            return {}
+        if args[:3] == ("--method", "POST", f"{BASE}/releases/generate-notes"):
+            return {"body": "## What's Changed\n* one\n"}
+        if args[:3] == ("--method", "POST", f"{BASE}/releases"):
+            create_values.extend(args[4::2])  # the values after each -f / -F flag
+            state["release"] = {"id": 7, "draft": True, "prerelease": False, "assets": []}
+            return state["release"]
+        if args[:3] == ("--method", "PATCH", f"{BASE}/releases/7"):
+            state["release"] = {**state["release"], "draft": False}
+            return state["release"]
+        raise AssertionError(args)
+
+    def fake_preflight(_record):
+        release = state["release"]
+        if release is not None and not release["assets"]:
+            release["assets"] = [
+                {"name": name, "browser_download_url": f"https://github.com/x/{name}"}
+                for name in sorted(support.RELEASE_NAMES)
+            ]
+        return release
+
+    monkeypatch.setattr(promotion, "gh", fake_gh)
+    monkeypatch.setattr(promotion, "verify_pypi", lambda _record: {})
+    monkeypatch.setattr(promotion, "github_preflight", fake_preflight)
+    monkeypatch.setattr(promotion, "verify_public_file", lambda url, expected, hosts: None)
+    uploads = []
+    monkeypatch.setattr(
+        promotion.subprocess, "run", lambda argv, check: uploads.append(argv) or None
+    )
+
+    result = promotion.publish_github(tmp_path, record, "4.0.2")
+
+    blob = f"https://github.com/{support.REPOSITORY}/blob/abc123"
+    assert "draft=true" in create_values and "name=Godot AI 4.0.3" in create_values
+    assert create_values[-1] == (
+        f"body=See the version-pinned migration guide: {blob}/docs/v4-migration.md\n"
+        f"Changelog: {blob}/CHANGELOG.md\n"
+        "\n"
+        "## What's Changed\n* one\n"
+    )
+    assert len(uploads) == 1 and uploads[0][:3] == ["gh", "release", "upload"]
+    assert set(result) == set(support.RELEASE_NAMES)

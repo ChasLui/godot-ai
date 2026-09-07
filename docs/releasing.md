@@ -121,6 +121,32 @@ published, the published bytes are a fresh reviewed A, not the retained B.
 nothing. A green signing check proves only that the stored private key matches
 the embedded public key; it is not release qualification.
 
+### Release notes, the changelog, and Discord
+
+`CHANGELOG.md` at the repository root is the human-facing changelog. Add the
+release's entry (version, date, what changed for users, known issues) to
+candidate A, the reviewed `main` commit, before dispatching qualification: the
+published release body links to that file at candidate A's commit, so an entry
+added afterward is invisible from the release page until the next release. The
+body the promotion writes is `release_notes()` in
+`script/release_promotion.py`: the version-pinned migration guide, the pinned
+`CHANGELOG.md`, then GitHub's generated "What's Changed" list from the
+`previous_version` tag to candidate A's commit. If GitHub cannot generate the
+list, the body carries the two links alone and the operator edits the notes by
+hand; notes are mutable and are not a trust anchor, so this is never a reason
+to refuse publication.
+
+Publishing the draft emits GitHub's `release: published` event, which runs
+`discord-changelog.yml`. That workflow posts the release name, URL, and notes
+to the Discord `#changelog` channel through the `DISCORD_CHANGELOG_WEBHOOK`
+repository secret, silently (no push notifications), and fails red when the
+post fails so a broken webhook is noticed. The v3 line posted from inside its
+release workflow; the v4 publishing jobs deliberately run nothing but the
+promotion, so the post moved to its own workflow. Dispatch it by hand with a
+`tag` input to re-post a release or to backfill one published before the
+workflow existed. The workflow file is read from the tagged commit, so v3 tags
+never trigger it.
+
 ### Operator setup before candidate signing
 
 Inspect the live repository configuration; an environment name in YAML does
