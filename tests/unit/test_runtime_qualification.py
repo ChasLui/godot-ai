@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -574,3 +575,88 @@ def test_runtime_row_accepts_the_extra_engine_row(monkeypatch, tmp_path):
     output = tmp_path / "output"
     runtime.runtime_row(candidates, python_row, "godot", "4.7.2", output, "ubuntu-latest")
     assert support.read_json(output / "row.json")["godot_version"] == "4.7.2"
+
+
+def test_capability_release_waits_for_a_lock_the_backend_still_holds(monkeypatch, tmp_path):
+    (tmp_path / "http-8000.lock").write_text("", encoding="utf-8")
+    checks = []
+    monkeypatch.setattr(
+        runtime, "_lock_released", lambda lock: checks.append(lock.name) or len(checks) >= 3
+    )
+    sleeps = []
+    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: sleeps.append(seconds))
+    runtime._wait_for_capability_release(tmp_path, timeout=5.0)
+    assert checks == ["http-8000.lock"] * 3
+    assert sleeps and all(0 < s <= 0.5 for s in sleeps)
+
+    checks.clear()
+    monkeypatch.setattr(runtime, "_lock_released", lambda lock: False)
+    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: None)
+    with pytest.raises(support.ReleaseError, match="still holds http-8000.lock"):
+        runtime._wait_for_capability_release(tmp_path, timeout=0.2)
+    # No directory or no locks: nothing to wait for.
+    runtime._wait_for_capability_release(tmp_path / "missing", timeout=0.1)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX advisory locks")
+def test_lock_released_takes_the_posix_flock_as_proof(tmp_path):
+    import fcntl
+
+    lock = tmp_path / "http-8000.lock"
+    lock.write_text("", encoding="utf-8")
+    with lock.open("rb") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        assert runtime._lock_released(lock) is False, "a held flock is not released"
+        assert lock.exists(), "the file must not be deleted while held"
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+    assert runtime._lock_released(lock) is True
+    assert not lock.exists()
+    assert runtime._lock_released(lock) is True, "a missing lock counts as released"
+
+
+def test_lock_released_on_windows_is_a_successful_delete(monkeypatch, tmp_path):
+    lock = tmp_path / "http-8000.lock"
+    lock.write_text("", encoding="utf-8")
+    monkeypatch.setattr(runtime.os, "name", "nt")
+    held = lambda self, *a, **k: (_ for _ in ()).throw(PermissionError(32, "held"))  # noqa: E731
+    monkeypatch.setattr(Path, "unlink", held)
+    assert runtime._lock_released(lock) is False
+    monkeypatch.undo()
+    monkeypatch.setattr(runtime.os, "name", "nt")
+    assert runtime._lock_released(lock) is True
+    assert runtime._lock_released(lock) is True, "already gone"
+
+
+def test_scrub_private_material_removes_key_and_capabilities_or_fails(monkeypatch, tmp_path):
+    key = tmp_path / "private-key.pem"
+    key.write_text("secret", encoding="utf-8")
+    capabilities = tmp_path / "capabilities"
+    capabilities.mkdir()
+    (capabilities / "http-8000.json").write_text("{}", encoding="utf-8")
+    runtime._scrub_private_material(key, capabilities, tmp_path / "absent")
+    assert not key.exists() and not capabilities.exists()
+
+    capabilities.mkdir()
+    monkeypatch.setattr(
+        runtime.shutil, "rmtree", lambda path: (_ for _ in ()).throw(OSError(32, "held"))
+    )
+    with pytest.raises(support.ReleaseError, match="could not remove private material"):
+        runtime._scrub_private_material(capabilities)
+
+
+def test_capability_directory_follows_the_isolated_environment(monkeypatch, tmp_path):
+    # Build both environments under a patched os.name, then restore it before
+    # anything constructs a Path: pathlib picks its flavour from os.name, and a
+    # mismatch raises on the host (and crashes pytest's failure reporting).
+    original = runtime.os.name
+    try:
+        monkeypatch.setattr(runtime.os, "name", "nt")
+        windows = runtime._isolated_environment(tmp_path / "win", "http://127.0.0.1:1/")
+        monkeypatch.setattr(runtime.os, "name", "posix")
+        posix = runtime._isolated_environment(tmp_path / "posix", "http://127.0.0.1:1/")
+    finally:
+        monkeypatch.setattr(runtime.os, "name", original)
+    assert runtime._capability_directory(windows) == (
+        tmp_path / "win" / "local-app-data" / "godot-ai" / "capabilities"
+    )
+    assert runtime._capability_directory(posix) == tmp_path / "posix" / "capabilities"
