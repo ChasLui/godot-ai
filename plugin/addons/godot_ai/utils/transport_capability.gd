@@ -11,6 +11,7 @@ const MAX_RECORD_BYTES := 1024
 const _POSIX_PERMISSION_MASK := 0x1ff  ## 0777
 const _GROUP_OTHER_PERMISSION_MASK := 0x3f  ## 0077
 const _GROUP_OTHER_WRITE_MASK := 0x12  ## 0022
+const _MAX_LINK_HOPS := 8
 const _SYSTEM_TEMP_ROOTS: Array[String] = ["/tmp", "/private/tmp", "/var/tmp"]
 const _KEYS: Array[String] = [
 	"version", "http", "websocket", "instance_nonce",
@@ -25,16 +26,19 @@ static func read_for_http_port(http_port: int, captured_path := "") -> Dictionar
 
 
 static func _read_path(path: String) -> Dictionary:
-	if path.is_empty() or not path.is_absolute_path() or _path_has_link(path):
+	if path.is_empty() or not path.is_absolute_path():
 		return {}
-	var directory := path.get_base_dir()
+	var resolved := _resolve_trusted_path(path)
+	if resolved.is_empty():
+		return {}
+	var directory := resolved.get_base_dir()
 	if (
 		not _safe_posix_ancestors(directory)
 		or not _private_path(directory, true)
-		or not _private_path(path, false)
+		or not _private_path(resolved, false)
 	):
 		return {}
-	var file := FileAccess.open(path, FileAccess.READ)
+	var file := FileAccess.open(resolved, FileAccess.READ)
 	if file == null:
 		return {}
 	var length := file.get_length()
@@ -101,6 +105,56 @@ static func _private_path(path: String, directory: bool) -> bool:
 	## that group/other access is closed; it is not an owner-identity proof.
 	var mode := FileAccess.get_unix_permissions(path) & _POSIX_PERMISSION_MASK
 	return mode != 0 and (mode & _GROUP_OTHER_PERMISSION_MASK) == 0
+
+
+## Walk `path` from its root and return it with every accepted link component
+## replaced by its target, or "" when the path must not be trusted. A link is
+## followed only when the directory holding it is closed to group and other
+## writes, so only that directory's owner or root could have placed it; ostree
+## distributions need this for `/home -> /var/home` (#993). Godot exposes no
+## owning UID, so this is the strongest proof available here; Python, which
+## publishes the record, additionally requires such a link to be root-owned.
+## The record file itself is never followed, and a chain longer than
+## `_MAX_LINK_HOPS` fails closed. Windows keeps rejecting every detectable
+## link or reparse point.
+static func _resolve_trusted_path(path: String) -> String:
+	if OS.get_name() == "Windows":
+		return "" if _path_has_link(path) else path
+	var remaining := path.simplify_path().split("/", false)
+	var current := "/"
+	var hops := 0
+	while not remaining.is_empty():
+		var part := remaining[0]
+		remaining.remove_at(0)
+		var candidate := current.path_join(part)
+		var parent := DirAccess.open(current)
+		if parent == null:
+			return ""
+		if parent.is_link(candidate):
+			if (
+				remaining.is_empty()
+				or hops >= _MAX_LINK_HOPS
+				or not _closed_to_group_and_other(current)
+			):
+				return ""
+			hops += 1
+			var target := parent.read_link(candidate)
+			if target.is_empty():
+				return ""
+			if not target.is_absolute_path():
+				target = current.path_join(target)
+			var target_parts := target.simplify_path().split("/", false)
+			target_parts.append_array(remaining)
+			remaining = target_parts
+			current = "/"
+			continue
+		current = candidate
+	return current
+
+
+static func _closed_to_group_and_other(directory: String) -> bool:
+	var mode := FileAccess.get_unix_permissions(directory) & _POSIX_PERMISSION_MASK
+	return mode != 0 and (mode & _GROUP_OTHER_WRITE_MASK) == 0
 
 
 static func _path_has_link(path: String) -> bool:

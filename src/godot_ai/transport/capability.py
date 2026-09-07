@@ -26,6 +26,8 @@ _WS_TOKEN = re.compile(r"[0-9a-f]{64}\Z")
 _NONCE = re.compile(r"[A-Fa-f0-9]{32}\Z")
 _KEYS = frozenset({"version", "http", "websocket", "instance_nonce"})
 _REPARSE_POINT = 0x400
+# Bound on link components followed while resolving one capability path.
+_MAX_LINK_HOPS = 8
 
 
 @dataclass(frozen=True)
@@ -137,9 +139,7 @@ def capability_directory() -> Path:
             raise ValueError(f"{CAPABILITY_DIR_ENV} must be an absolute path")
         directory = base
     elif sys.platform == "darwin":
-        directory = (
-            Path.home() / "Library" / "Application Support" / "godot-ai" / "capabilities"
-        )
+        directory = Path.home() / "Library" / "Application Support" / "godot-ai" / "capabilities"
     else:
         config = os.environ.get("XDG_CONFIG_HOME", "").strip()
         if config:
@@ -152,7 +152,7 @@ def capability_directory() -> Path:
     if os.name != "nt":
         if not directory.is_absolute():
             raise ValueError("capability directory must be an absolute path")
-        _reject_unsafe_posix_ancestors(directory)
+        directory = _reject_unsafe_posix_ancestors(directory)
     return directory
 
 
@@ -164,7 +164,7 @@ def record_path(http_port: int, directory: Path | None = None) -> Path:
     if os.name != "nt":
         if not selected.is_absolute():
             raise ValueError("capability directory must be an absolute path")
-        _reject_unsafe_posix_ancestors(selected)
+        selected = _reject_unsafe_posix_ancestors(selected)
     return selected / f"http-{port}.json"
 
 
@@ -196,31 +196,69 @@ def _is_safe_posix_ancestor(path: Path, info: os.stat_result) -> bool:
         and stat.S_ISDIR(info.st_mode)
         and bool(mode & stat.S_ISVTX)
     )
-    return info.st_uid in {0, os.getuid()} and (
-        mode & 0o022 == 0 or root_sticky_directory
+    return info.st_uid in {0, os.getuid()} and (mode & 0o022 == 0 or root_sticky_directory)
+
+
+def _is_root_private_directory(path: Path) -> bool:
+    """A root-owned directory closed to group and other writes; no sticky exception."""
+
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) & 0o022 == 0
     )
 
 
-def _reject_unsafe_posix_ancestors(path: Path) -> None:
-    """Reject any POSIX capability namespace mutable by another account."""
+def _reject_unsafe_posix_ancestors(path: Path) -> Path:
+    """Reject any POSIX capability namespace mutable by another account.
+
+    Returns ``path`` with every accepted link component replaced by its
+    target, so callers operate on a link-free path. A link is followed only
+    when it is owned by root, sits in a root-owned directory that group and
+    other cannot write, and every ancestor before it already passed: another
+    account cannot place such a link, and ostree-based distributions rely on
+    one (``/home -> /var/home`` on Fedora Atomic and Bazzite, #993). Every
+    other link fails closed, as does a chain longer than ``_MAX_LINK_HOPS``.
+    The target's own components are walked under the same rules, so lexical
+    ``..`` resolution against the already-resolved parent matches the kernel.
+    """
 
     if os.name == "nt":  # pragma: no cover - overrides are already disabled
-        return
+        return path
+    remaining = list(path.parts[1:])
     current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current /= part
+    hops = 0
+    while remaining:
+        current = current / remaining.pop(0)
         try:
             info = current.lstat()
         except FileNotFoundError:
-            break
+            # Nothing below a missing component exists yet; it is created 0700.
+            return current.joinpath(*remaining)
         if _is_link_or_reparse(info):
-            raise OSError(
-                errno.ELOOP,
-                "capability path traverses a link or reparse point",
-                current,
-            )
+            if (
+                info.st_uid != 0
+                or hops >= _MAX_LINK_HOPS
+                or not _is_root_private_directory(current.parent)
+            ):
+                raise OSError(
+                    errno.ELOOP,
+                    "capability path traverses a link or reparse point",
+                    current,
+                )
+            hops += 1
+            target = Path(os.readlink(current))
+            if not target.is_absolute():
+                target = current.parent / target
+            target = Path(os.path.normpath(target))
+            remaining = list(target.parts[1:]) + remaining
+            current = Path(target.anchor)
+            continue
         if not _is_safe_posix_ancestor(current, info):
             raise OSError(errno.EACCES, "capability path has an unsafe ancestor", current)
+    return current
 
 
 def _prepare_directory(directory: Path) -> None:

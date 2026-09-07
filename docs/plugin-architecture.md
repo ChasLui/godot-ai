@@ -502,10 +502,19 @@ with a guessed request ID.
 
 HTTP is separately bearer-authenticated and bounded. Status/lease routes do not
 form an unauthenticated side channel. Private capability records are owner-only
-on POSIX; caller-selected roots reject link traversal and unsafe ancestors. On
-Windows, v4 uses fixed per-user roots and rejects detectable reparse traversal,
-but does not claim secrecy or integrity against another local account or
-malicious code already running as the same user.
+on POSIX, and every ancestor of the record must be owned by root or the user
+and closed to group/other writes (the canonical sticky temp roots excepted). A
+link component is followed only when the link is root-owned and sits in a
+root-owned directory closed to group/other writes, which no other account can
+arrange; ostree's `/home -> /var/home` is the case that needs it (#993). The
+target's components are walked under the same rules, the record file itself
+is never followed, and a chain longer than eight links fails closed. The
+plugin, which cannot see file ownership, follows a link only below a directory
+closed to group/other writes; the server, which publishes the record, is the
+side that requires root ownership. On Windows, v4 uses fixed per-user roots
+and rejects detectable reparse traversal, but does not claim secrecy or
+integrity against another local account or malicious code already running as
+the same user.
 
 ---
 
