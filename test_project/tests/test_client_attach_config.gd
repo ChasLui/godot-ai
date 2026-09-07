@@ -666,6 +666,7 @@ func test_registry_wide_attach_shape_declarations() -> void:
 		"claude_code": [McpClient.CommandShape.FLAT, "stdio", ["url"]],
 		"claude_desktop": [McpClient.CommandShape.FLAT, null, ["url"]],
 		"codex": [McpClient.CommandShape.COMMAND_ARRAY, null, ["url"]],
+		"codebuddy": [McpClient.CommandShape.FLAT, "stdio", ["url", "headers"]],
 		"cursor": [McpClient.CommandShape.FLAT, "stdio", ["url"]],
 		"antigravity": [McpClient.CommandShape.FLAT, null, ["serverUrl"]],
 		"gemini_cli": [McpClient.CommandShape.FLAT, null, ["httpUrl", "url"]],
