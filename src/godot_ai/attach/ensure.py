@@ -221,14 +221,9 @@ class AdvisoryFileLock:
             handle = self.path.open("a+b")
         except OSError as exc:
             raise self._lock_error("open", exc) from exc
-        try:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-        except OSError as exc:
-            handle.close()
-            raise self._lock_error("prepare", exc) from exc
+        # Both backends can lock an empty file. Do not initialize its first
+        # byte before acquiring: another opener may already hold that byte's
+        # Windows lock, making an otherwise valid contender fail on the write.
         deadline = time.monotonic() + self.timeout_seconds
         while True:
             try:
