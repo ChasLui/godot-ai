@@ -155,7 +155,7 @@ static func check_status_details(
 	var mismatch := {
 		"status": McpClient.Status.CONFIGURED_MISMATCH,
 		"error_msg": "",
-		"owned": McpClient.launch_mentions_godot_ai(" ".join(launch_tokens)),
+		"owned": McpClient.launch_values_mention_godot_ai(launch_tokens),
 	}
 
 	if client.command_shape != McpClient.CommandShape.NONE:

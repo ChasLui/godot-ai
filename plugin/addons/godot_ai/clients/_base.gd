@@ -540,29 +540,39 @@ static func _packed_slice(packed: PackedStringArray, from: int, to: int) -> Pack
 ## project directory) does not count. The post-update major migration
 ## rewrites only such entries; anything else is the user's own server.
 static func launch_mentions_godot_ai(text: String) -> bool:
-	for raw_token in text.split(" ", false):
-		var token := raw_token.strip_edges().lstrip("\"'[{(").rstrip("\"'])},")
-		if token.is_empty():
+	## Free text (a CLI probe's output) is split on spaces; structured launch
+	## values should go through `launch_values_mention_godot_ai` unsplit.
+	return launch_values_mention_godot_ai(PackedStringArray(text.split(" ", false)))
+
+
+## Each value is one command, argument or URL. A URI never names an
+## executable, and Windows separators are normalized before the basename
+## check so `C:\Program Files\Godot AI\godot-ai.exe` is recognized whole.
+static func launch_values_mention_godot_ai(values: PackedStringArray) -> bool:
+	for raw_value in values:
+		var value := raw_value.strip_edges().lstrip("\"'[{(").rstrip("\"'])},")
+		if value.is_empty() or value.contains("://"):
 			continue
-		if token == "godot-ai" or token == "godot_ai" or token.begins_with("godot-ai=="):
+		if value == "godot-ai" or value == "godot_ai" or value.begins_with("godot-ai=="):
 			return true
-		var base := token.get_file()
+		var base := value.replace("\\", "/").get_file()
 		if base == "godot-ai" or base == "godot-ai.exe":
 			return true
 	return false
 
 
-## The launch-bearing fields of an entry, as text for the check above. The
-## entry sits under our server name, so the name itself must not count.
-static func entry_launch_text(entry: Dictionary) -> String:
-	var tokens := PackedStringArray()
+## The launch-bearing fields of an entry, one value each, for the check
+## above. The entry sits under our server name, so the name itself must not
+## count.
+static func entry_launch_values(entry: Dictionary) -> PackedStringArray:
+	var values := PackedStringArray()
 	for key in ["command", "args", "url"]:
 		if not entry.has(key):
 			continue
 		var value: Variant = entry[key]
 		if value is Array:
 			for item in value:
-				tokens.append(str(item))
+				values.append(str(item))
 		else:
-			tokens.append(str(value))
-	return " ".join(tokens)
+			values.append(str(value))
+	return values
