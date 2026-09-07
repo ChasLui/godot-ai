@@ -298,7 +298,7 @@ header works only until the next server start.
    "godot-ai": {
      "command": "ssh",
      "args": [
-       "-T", "-o", "LogLevel=ERROR",
+       "-T", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR",
        "you@host.docker.internal",
        "uvx --isolated --no-config --no-env-file --no-sources --no-build --index-strategy first-index --keyring-provider disabled --index https://pypi.org/simple --default-index https://pypi.org/simple --find-links https://pypi.org/simple/godot-ai/ --link-mode copy --from godot-ai==4.0.2 godot-ai attach --port 8000 --ws-port 9500"
      ]
@@ -306,9 +306,14 @@ header works only until the next server start.
    ```
 
    `-T` refuses a pseudo-terminal and `LogLevel=ERROR` silences banners, so
-   nothing but the MCP stream reaches stdout. Use the dock's command verbatim
-   in place of the example; the version pin must equal the installed plugin's
-   version or the bridge refuses the server.
+   nothing but the MCP stream reaches stdout. `BatchMode=yes` makes SSH fail
+   instead of prompting, which a stdio MCP client could never answer. Before
+   persisting the entry, connect once by hand from the client machine
+   (`ssh -T you@<host> true`), check the host key fingerprint, and accept it so
+   `known_hosts` carries it; do not turn off host-key checking to skip that
+   step. Use the dock's command verbatim in place of the example; the version
+   pin must equal the installed plugin's version or the bridge refuses the
+   server.
 4. **Host name:** Docker Desktop on Windows or macOS resolves
    `host.docker.internal` to the host; Docker Engine on Linux needs
    `--add-host=host.docker.internal:host-gateway` on the container. From WSL2
