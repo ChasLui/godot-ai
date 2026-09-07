@@ -136,7 +136,10 @@ def test_codex_workers_complete_after_two_ordinary_editor_restarts(tmp_path: Pat
         assert parsed["model"] == "validation-sentinel"
         entry = parsed["mcp_servers"]["godot-ai"]
         assert "attach" in entry["args"], entry
-        assert any("godot-ai==4.0.0" in arg for arg in entry["args"]), entry
+        # Both a pinned uvx launch and a version-checked system installation
+        # are supported; Windows CI has the latter on PATH.
+        assert entry["command"], entry
+        assert "--port" in entry["args"] and "--ws-port" in entry["args"], entry
         pids.append(result["pid"])
         (project / "result.json").unlink()
     assert len(set(pids)) == 3, pids
