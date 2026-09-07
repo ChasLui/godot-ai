@@ -830,7 +830,12 @@ class _GuiEditorScriptHandler extends ScriptHandler:
 	func _register_written_file(path: String) -> void:
 		super(path)
 		if ResourceLoader.has_cached(path):
-			# EditorFileSystem::_should_reload_script -> Script::reload_from_file
+			# EditorFileSystem::_should_reload_script -> Script::reload_from_file.
+			# CACHE_MODE_IGNORE is the mode that refreshes the cached object:
+			# ResourceFormatLoaderGDScript maps it to GDScriptCache::get_full_script
+			# (update_from_disk=true), i.e. load_source_code() + reload(true) on the
+			# entry every holder shares — the same thing the handler's diagnostics
+			# capture relies on. CACHE_MODE_REPLACE returns the cached script untouched.
 			ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
 		else:
 			ResourceLoader.load(path)
