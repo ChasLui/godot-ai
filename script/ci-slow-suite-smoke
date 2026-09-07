@@ -21,6 +21,8 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PYTHON_CMD="${1:-${PYTHON_CMD:-python}}"
+export PYTHON_CMD
 source "$SCRIPT_DIR/_ci_env.sh"
 source "$SCRIPT_DIR/_ci_session_guard.sh"
 
@@ -32,35 +34,38 @@ EXPECTED_TESTS=25
 SERVER_URL="$MCP_SERVER_URL"
 ci_load_http_auth
 HEADERS=("${HTTP_AUTH_HEADERS[@]}" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream")
+SESSION_ID=""
+source "$SCRIPT_DIR/_ci_mcp.sh"
 
 cleanup() {
+  close_mcp_session
   rm -f "$FIXTURE_DST" "$FIXTURE_DST.uid"
 }
 trap cleanup EXIT
 
-# Shared SSE-response field extractor: prints structuredContent JSON for the
-# first data: line, or exits 3 when none is present.
+# Extract structuredContent from a JSON or SSE response, retaining its id.
 extract_content() {
-  python3 -c "
+  "$PYTHON_CMD" -c "
 import json, sys
-raw = sys.stdin.read()
-for line in raw.split('\n'):
-    if line.startswith('data: '):
-        data = json.loads(line[6:])
-        result = data.get('result', {})
-        sc = result.get('structuredContent', {})
-        if not sc:
-            text = result.get('content', [{}])[0].get('text', '{}')
-            try:
-                sc = json.loads(text)
-            except json.JSONDecodeError:
-                sc = {'_raw_text': text}
-        sc['_is_error'] = bool(result.get('isError'))
-        sc['_rpc_id'] = data.get('id')
-        print(json.dumps(sc))
-        break
-else:
+raw = sys.stdin.read().lstrip('\\ufeff').strip()
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError:
+    data = next((json.loads(line[5:].lstrip()) for line in raw.splitlines()
+                 if line.startswith('data:')), None)
+if not isinstance(data, dict):
     sys.exit(3)
+result = data.get('result', {})
+sc = result.get('structuredContent', {})
+if not sc:
+    text = result.get('content', [{}])[0].get('text', '{}')
+    try:
+        sc = json.loads(text)
+    except json.JSONDecodeError:
+        sc = {'_raw_text': text}
+sc['_is_error'] = bool(result.get('isError') or data.get('error'))
+sc['_rpc_id'] = data.get('id')
+print(json.dumps(sc))
 "
 }
 
@@ -75,7 +80,7 @@ mcp_call() { # id name arguments-json
 }
 
 godot_sessions() {
-  mcp_call 7 session_manage '{"op":"list"}' | extract_content | python3 -c "
+  mcp_call 7 session_manage '{"op":"list"}' | extract_content | "$PYTHON_CMD" -c "
 import json, sys
 sc = json.loads(sys.stdin.read())
 sc.pop('_is_error', None)
@@ -85,7 +90,7 @@ print(json.dumps(sc))
 }
 
 godot_target_session_id() {
-  godot_sessions | TARGET_GODOT_SESSION="$TARGET_GODOT_SESSION" python3 -c "
+  godot_sessions | TARGET_GODOT_SESSION="$TARGET_GODOT_SESSION" "$PYTHON_CMD" -c "
 import json, os, sys
 target = os.environ['TARGET_GODOT_SESSION']
 sessions = json.loads(sys.stdin.read()).get('sessions', [])
@@ -97,14 +102,12 @@ print(target if any(s.get('session_id') == target for s in sessions) else '')
 echo "Waiting for Godot plugin to connect..."
 SESSION_ID=""
 for i in $(seq 1 60); do
-  SESSION_ID=$(curl -si "$SERVER_URL" -X POST "${HEADERS[@]}" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"slow-smoke","version":"1.0"}}}' \
-    2>&1 | grep -i 'mcp-session-id' | tr -d '\r' | awk '{print $2}' || true)
-  if [ -z "$SESSION_ID" ]; then sleep 2; continue; fi
-  curl -s "$SERVER_URL" -X POST "${HEADERS[@]}" -H "Mcp-Session-Id: $SESSION_ID" \
-    -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' > /dev/null || true
+  if [ -z "$SESSION_ID" ] && ! initialize_mcp_session; then
+    sleep 2
+    continue
+  fi
   SESSIONS=$(godot_sessions || true)
-  SESSION_COUNT=$(python3 -c "import json,sys; print(len(json.loads(sys.stdin.read()).get('sessions', [])))" \
+  SESSION_COUNT=$("$PYTHON_CMD" -c "import json,sys; print(len(json.loads(sys.stdin.read()).get('sessions', [])))" \
     <<< "$SESSIONS" 2>/dev/null || echo "0")
   if [ "$SESSION_COUNT" -gt 0 ] 2>/dev/null; then
     if ! TARGET_GODOT_SESSION=$(ci_select_godot_session \
@@ -141,12 +144,12 @@ RESULT=$(mcp_call 42 test_run "{\"suite\":\"$SUITE_NAME\"}")
 ELAPSED=$(( $(date +%s) - START_TS ))
 
 CONTENT=$(echo "$RESULT" | extract_content) || {
-  echo "REPRODUCED/FAIL: no SSE data line from test_run after ${ELAPSED}s"
+  echo "REPRODUCED/FAIL: no JSON-RPC result from test_run after ${ELAPSED}s"
   echo "Raw response (first 500 chars): $(echo "$RESULT" | head -c 500)"
   exit 1
 }
 
-echo "$CONTENT" | python3 -c "
+echo "$CONTENT" | "$PYTHON_CMD" -c "
 import json, sys
 sc = json.loads(sys.stdin.read())
 elapsed = $ELAPSED
