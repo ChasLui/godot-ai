@@ -533,19 +533,36 @@ static func _packed_slice(packed: PackedStringArray, from: int, to: int) -> Pack
 	return out
 
 
-## Whether an existing entry's launch text refers to Godot AI at all: the
-## PyPI/console name `godot-ai` or the module `godot_ai`. The post-update
-## major migration rewrites only such entries; anything else is the user's
-## own server and stays for an explicit Configure.
+## Whether an existing entry's launch text launches Godot AI: an executable
+## named `godot-ai`, a `godot-ai==<version>` package pin, the bare `godot-ai`
+## console-script argument, or the `godot_ai` module. Tokens are matched
+## exactly, so a URL or path that merely contains the name (a docs link, a
+## project directory) does not count. The post-update major migration
+## rewrites only such entries; anything else is the user's own server.
 static func launch_mentions_godot_ai(text: String) -> bool:
-	return text.contains("godot-ai") or text.contains("godot_ai")
+	for raw_token in text.split(" ", false):
+		var token := raw_token.strip_edges().lstrip("\"'[{(").rstrip("\"'])},")
+		if token.is_empty():
+			continue
+		if token == "godot-ai" or token == "godot_ai" or token.begins_with("godot-ai=="):
+			return true
+		var base := token.get_file()
+		if base == "godot-ai" or base == "godot-ai.exe":
+			return true
+	return false
 
 
 ## The launch-bearing fields of an entry, as text for the check above. The
 ## entry sits under our server name, so the name itself must not count.
 static func entry_launch_text(entry: Dictionary) -> String:
-	var launch := {}
+	var tokens := PackedStringArray()
 	for key in ["command", "args", "url"]:
-		if entry.has(key):
-			launch[key] = entry[key]
-	return JSON.stringify(launch)
+		if not entry.has(key):
+			continue
+		var value: Variant = entry[key]
+		if value is Array:
+			for item in value:
+				tokens.append(str(item))
+		else:
+			tokens.append(str(value))
+	return " ".join(tokens)
