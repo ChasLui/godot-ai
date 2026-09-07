@@ -141,14 +141,21 @@ static func check_status_details(
 	## Whether the existing entry launches Godot AI at all: a major migration
 	## may rewrite such an entry, never a foreign one (client_job_owner.gd).
 	## Only the launch values count; the section header carries our name.
-	var launch_text := ""
-	for launch_key in ["command", "args", "url"]:
+	var launch_tokens := PackedStringArray()
+	for launch_key in ["command", "url"]:
 		if by_key.has(launch_key):
-			launch_text += _item_value(by_key[launch_key]) + "\n"
+			var decoded := _decode_toml_string(_item_value(by_key[launch_key]))
+			if bool(decoded.get("ok", false)):
+				launch_tokens.append(str(decoded.get("value", "")))
+	if by_key.has("args"):
+		var decoded_args := _decode_toml_string_array(_item_value(by_key["args"]))
+		if bool(decoded_args.get("ok", false)):
+			for argument in decoded_args.get("value", []):
+				launch_tokens.append(str(argument))
 	var mismatch := {
 		"status": McpClient.Status.CONFIGURED_MISMATCH,
 		"error_msg": "",
-		"owned": McpClient.launch_mentions_godot_ai(launch_text),
+		"owned": McpClient.launch_mentions_godot_ai(" ".join(launch_tokens)),
 	}
 
 	if client.command_shape != McpClient.CommandShape.NONE:

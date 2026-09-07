@@ -180,7 +180,12 @@ static func _check_status_merged(
 		var latest: Dictionary = project_tiers[project_tiers.size() - 1]
 		var details := _entry_status_details(client, latest["entry"], server_url, launch)
 		if details.get("status") != McpClient.Status.CONFIGURED:
-			return {"status": McpClient.Status.CONFIGURED_MISMATCH, "error_msg": _project_override_message([latest], "update or remove", client.display_name, server_name)}
+			## Keep `owned` from the effective entry: the post-update migration
+			## decides from it whether this mismatch is ours to repin.
+			var mismatch := details.duplicate()
+			mismatch["status"] = McpClient.Status.CONFIGURED_MISMATCH
+			mismatch["error_msg"] = _project_override_message([latest], "update or remove", client.display_name, server_name)
+			return mismatch
 		return {"status": McpClient.Status.CONFIGURED, "error_msg": ""}
 	if effective == null:
 		return {"status": McpClient.Status.NOT_CONFIGURED, "error_msg": ""}

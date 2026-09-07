@@ -789,7 +789,7 @@ const STATUS_PATH := "res://{REFUSED_SWAP_STATUS_FILE}"
 const TOOL_PROBE_DONE_PATH := "res://{REFUSED_SWAP_TOOL_PROBE_FILE}"
 const DriverSupport := preload("res://_test_self_update_driver_support.gd")
 const START_AFTER_FRAMES := 45
-const DEADLINE_MS := 240000
+const DEADLINE_MS := 200000
 
 var _frames := 0
 var _deadline_ms := 0

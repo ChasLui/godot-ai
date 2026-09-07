@@ -6355,9 +6355,16 @@ func test_text_remove_server_entry_bom_no_match_returns_unchanged() -> void:
 
 func test_launch_mentions_godot_ai_recognizes_our_launch_shapes_only() -> void:
 	assert_true(McpClient.launch_mentions_godot_ai("uvx --from godot-ai==3.2.4 godot-ai"))
-	assert_true(McpClient.launch_mentions_godot_ai('{"command": "/x/bin/godot-ai", "args": ["attach"]}'))
+	assert_true(McpClient.launch_mentions_godot_ai("/x/bin/godot-ai attach"))
+	assert_true(McpClient.launch_mentions_godot_ai("C:\\Tools\\godot-ai.exe attach"))
 	assert_true(McpClient.launch_mentions_godot_ai("python -m godot_ai"))
-	assert_false(McpClient.launch_mentions_godot_ai('{"command": "/usr/bin/python3", "args": ["my_server.py"]}'))
+	assert_true(McpClient.launch_mentions_godot_ai("uvx godot-ai==4.0.0"))
+	assert_false(McpClient.launch_mentions_godot_ai("/usr/bin/python3 my_server.py"))
+	## Mentions that are not launches: a docs URL, a project directory, a name.
+	assert_false(McpClient.launch_mentions_godot_ai("node server.js https://example.com/godot-ai/docs"))
+	assert_false(McpClient.launch_mentions_godot_ai("/home/me/projects/godot-ai/run.sh"))
+	assert_false(McpClient.launch_mentions_godot_ai("my-godot-ai-proxy --port 1"))
+	assert_false(McpClient.launch_mentions_godot_ai("godot-ai-helper"))
 	assert_false(McpClient.launch_mentions_godot_ai(""))
 
 
@@ -6390,4 +6397,11 @@ func test_json_mismatch_reports_whether_the_existing_entry_is_ours() -> void:
 		client, {"name": "godot-ai", "command": "/usr/bin/python3", "args": ["srv.py"]}, "http://x", launch
 	)
 	assert_false(bool(named.get("owned", true)), "the entry name is not a launch")
-	assert_eq(McpClient.entry_launch_text({"name": "godot-ai", "command": "x"}), '{"command":"x"}')
+	assert_eq(McpClient.entry_launch_text({"name": "godot-ai", "command": "x", "args": ["a", 1]}), "x a 1")
+	var docs_link := McpJsonStrategy._entry_status_details(
+		client,
+		{"command": "node", "args": ["server.js", "https://example.com/godot-ai/docs"]},
+		"http://x",
+		launch,
+	)
+	assert_false(bool(docs_link.get("owned", true)), "a URL containing our name is not a launch")
