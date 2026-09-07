@@ -4,6 +4,57 @@ extends McpTestSuite
 const Manager := preload("res://addons/godot_ai/utils/update_manager.gd")
 
 
+class RedirectProbe extends Manager:
+	var requested_url := ""
+	var failure := ""
+
+	func _request_active_asset(url: String) -> void:
+		requested_url = url
+
+	func _fail_download(reason: String) -> void:
+		failure = reason
+
+
+func test_manual_redirect_accepts_godot_redirect_limit_result() -> void:
+	var target := "https://release-assets.githubusercontent.com/github-production-release-asset/1208239711/test"
+	for code in [301, 302, 303, 307, 308]:
+		var manager := RedirectProbe.new()
+		manager._on_asset_completed(HTTPRequest.RESULT_REDIRECT_LIMIT_REACHED, code,
+			PackedStringArray(["Location: " + target]), PackedByteArray())
+		assert_eq(manager.requested_url, target)
+		assert_eq(manager._redirect_count, 1)
+		assert_eq(manager.failure, "")
+		manager.free()
+
+
+func test_manual_redirect_still_rejects_unsafe_targets_and_excess_hops() -> void:
+	for headers in [PackedStringArray(), PackedStringArray(["Location: http://github.com/x"]),
+		PackedStringArray(["Location: https://evil.invalid/x"]),
+		PackedStringArray(["Location: /relative"]),
+		PackedStringArray(["Location: https://github.com/x", "Location: https://github.com/y"])]:
+		var manager := RedirectProbe.new()
+		manager._on_asset_completed(HTTPRequest.RESULT_REDIRECT_LIMIT_REACHED, 302, headers, PackedByteArray())
+		assert_eq(manager.requested_url, "")
+		assert_eq(manager.failure, "untrusted or excessive redirect")
+		manager.free()
+	var exhausted := RedirectProbe.new()
+	exhausted._redirect_count = Manager.MAX_REDIRECTS
+	exhausted._on_asset_completed(HTTPRequest.RESULT_REDIRECT_LIMIT_REACHED, 302,
+		PackedStringArray(["Location: https://release-assets.githubusercontent.com/github-production-release-asset-1/test"]), PackedByteArray())
+	assert_eq(exhausted.requested_url, "")
+	assert_eq(exhausted.failure, "untrusted or excessive redirect")
+	exhausted.free()
+
+
+func test_manual_redirect_does_not_accept_other_transport_failures() -> void:
+	for pair in [[HTTPRequest.RESULT_CANT_CONNECT, 302], [HTTPRequest.RESULT_REDIRECT_LIMIT_REACHED, 200]]:
+		var manager := RedirectProbe.new()
+		manager._on_asset_completed(pair[0], pair[1], PackedStringArray(), PackedByteArray())
+		assert_eq(manager.requested_url, "")
+		assert_true(manager.failure.begins_with("download failed"))
+		manager.free()
+
+
 func suite_name() -> String:
 	return "update_manager"
 
@@ -108,7 +159,12 @@ func test_download_url_parser_rejects_spoofing_and_path_traversal() -> void:
 	assert_true(Manager._is_trusted_download_url(
 		"https://release-assets.githubusercontent.com/github-production-release-asset-1/x?sig=y"
 	))
+	assert_true(Manager._is_trusted_download_url(
+		"https://release-assets.githubusercontent.com/github-production-release-asset/1208239711/x?sig=y"
+	))
 	for url in [
+		"https://release-assets.githubusercontent.com/github-production-release-asset/999/x",
+		"https://release-assets.githubusercontent.com/github-production-release-asset/12082397110/x",
 		"http://github.com/hi-godot/godot-ai/releases/download/v4.1.0/x",
 		"https://github.com.evil.invalid/hi-godot/godot-ai/releases/download/v4.1.0/x",
 		"https://github.com@evil.invalid/hi-godot/godot-ai/releases/download/v4.1.0/x",

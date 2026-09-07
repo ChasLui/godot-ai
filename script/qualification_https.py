@@ -83,7 +83,7 @@ def private_release_origin(
                 {
                     "name": name,
                     "size": expected[name]["size"],
-                    "browser_download_url": ORIGIN + ASSET_PATH + name,
+                    "browser_download_url": ORIGIN + ASSET_PATH + "redirect/" + name,
                 }
                 for name in sorted(expected)
             ],
@@ -121,6 +121,15 @@ def private_release_origin(
                 self.send_error(400)
                 return
             name = self.path.removeprefix(ASSET_PATH)
+            if (
+                self.path.startswith(ASSET_PATH + "redirect/")
+                and name.removeprefix("redirect/") in expected
+            ):
+                self.send_response(302)
+                self.send_header("Location", ORIGIN + ASSET_PATH + name.removeprefix("redirect/"))
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if self.path == RELEASE_PATH:
                 payload = metadata
                 content_type = "application/json"

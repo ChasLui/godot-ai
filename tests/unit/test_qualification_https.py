@@ -69,6 +69,11 @@ def test_origin_serves_exact_bytes_over_verified_tls_and_keeps_token_private(
         assert {row["name"] for row in metadata["assets"]} == support.RELEASE_NAMES
         for row in metadata["assets"]:
             path = ASSET_PATH + row["name"]
+            redirect_path = row["browser_download_url"].removeprefix(https.ORIGIN)
+            code, empty, headers = request(endpoint, certificate, redirect_path)
+            assert code == 302 and empty == b""
+            assert headers["Location"] == https.ORIGIN + path
+            assert request(endpoint, certificate, redirect_path, headers={})[0] == 401
             code, empty, headers = request(endpoint, certificate, path, method="HEAD")
             assert code == 200 and empty == b""
             assert int(headers["Content-Length"]) == inventory[row["name"]]["size"]
