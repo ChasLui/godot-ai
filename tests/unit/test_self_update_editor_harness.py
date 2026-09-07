@@ -138,6 +138,7 @@ async def test_attached_agent_uses_python_and_the_editors_isolated_environment(
         "GODOT_AI_MODE": "user",
     }
     monkeypatch.setenv(capability_env, "unrelated-user-storage")
+    monkeypatch.setenv("ATTACHED_AGENT_INHERITED_SENTINEL", "preserved")
     agent = fixture.AttachedAgent(
         tmp_path, 18000, 19500, capability_dir=tmp_path, environment=environment
     )
@@ -168,3 +169,4 @@ async def test_attached_agent_uses_python_and_the_editors_isolated_environment(
     for name, value in environment.items():
         assert captured["env"][name] == value
     assert captured["env"]["GODOT_AI_DISABLE_TELEMETRY"] == "true"
+    assert captured["env"]["ATTACHED_AGENT_INHERITED_SENTINEL"] == "preserved"
