@@ -594,11 +594,29 @@ func test_manual_major_repin_marks_owned_mismatches_replaceable() -> void:
 	owner.free()
 
 
-func test_post_update_repin_rejects_missing_or_wrong_versions() -> void:
+func test_post_update_repin_rejects_a_missing_or_wrong_target() -> void:
 	var owner := _RepinRecordingOwner.new()
-	assert_false(bool(owner.begin_post_update_repin("", "4.0.0").get("ok", true)))
+	assert_false(bool(owner.begin_post_update_repin("3.1.2", "").get("ok", true)))
 	assert_false(bool(owner.begin_post_update_repin("3.1.2", "99.0.0").get("ok", true)))
 	assert_eq(owner._post_update_thread, null)
+	owner.free()
+
+
+## The closed-editor installer records no previous version when it installs
+## into a project without an add-on; that first start still repins.
+func test_fresh_install_repins_without_a_previous_version() -> void:
+	var owner := _RepinRecordingOwner.new()
+	var target := McpClientConfigurator.get_plugin_version()
+	var started := owner.begin_post_update_repin("", target, true)
+	assert_true(bool(started.get("ok", false)), str(started.get("error", "")))
+	while owner._post_update_thread != null and owner._post_update_thread.is_alive():
+		OS.delay_msec(1)
+	owner._poll_post_update_repin()
+	assert_eq(owner.calls, [{
+		"from": "",
+		"to": target,
+		"replace_owned_mismatches": true,
+	}])
 	owner.free()
 
 
@@ -648,6 +666,23 @@ func test_post_update_retry_button_emits_barrier_action_instead_of_a_second_upda
 	dock._post_update_action = ""
 	dock._on_update_pressed()
 	assert_eq(update_calls[0], 1)
+	dock.free()
+
+
+func test_update_asks_before_saving_and_relaunching() -> void:
+	## A dock outside a scene tree has no dialog to show and proceeds directly
+	## (the test above); the confirmation itself is what a click really does.
+	var text := McpDockScript.update_confirm_text("4.1.0")
+	assert_true(text.contains("save your project"), text)
+	assert_true(text.contains("relaunch the editor"), text)
+	assert_true(text.contains("Godot AI v4.1.0"), text)
+	assert_true(text.contains("AI clients connected right now must be restarted"), text)
+	assert_true(McpDockScript.update_confirm_text("").contains("the new Godot AI"))
+	var dock := McpDockScript.new()
+	var update_calls := [0]
+	dock.update_requested.connect(func() -> void: update_calls[0] += 1)
+	dock._on_update_confirmed()
+	assert_eq(update_calls[0], 1, "confirming is what requests the update")
 	dock.free()
 
 

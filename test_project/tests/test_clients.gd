@@ -1444,55 +1444,6 @@ func test_env_lookup_worker_thread_never_warmed_var_reads_empty() -> void:
 		"un-warmed worker read must degrade to \"\", never touch the live env")
 
 
-func test_startup_actor_discovery_warms_home_for_its_worker() -> void:
-	## GUI-launched editors often have a minimal PATH. The startup worker must
-	## still find uvx in the user's well-known home directory without reading
-	## the process environment off-main.
-	var saved_home := OS.get_environment("HOME")
-	var saved_profile := OS.get_environment("USERPROFILE")
-	var fake_home := _scratch_dir.path_join("startup_actor_home")
-	_remove_dir_recursive(fake_home)
-	var bin_dir := fake_home.path_join(".local/bin")
-	DirAccess.make_dir_recursive_absolute(bin_dir)
-	var exe_name := "uvx.exe" if OS.get_name() == "Windows" else "uvx"
-	var expected := bin_dir.path_join(exe_name)
-	var fixture := FileAccess.open(expected, FileAccess.WRITE)
-	assert_true(fixture != null, "must create the well-known uvx fixture")
-	if fixture == null:
-		_remove_dir_recursive(fake_home)
-		return
-	fixture.store_string("fixture")
-	fixture.close()
-
-	if OS.get_name() == "Windows":
-		OS.unset_environment("HOME")
-		OS.set_environment("USERPROFILE", fake_home)
-	else:
-		OS.set_environment("HOME", fake_home)
-	McpClientConfigurator.invalidate_uvx_cli_cache()
-	McpClientConfigurator.warm_update_actor_discovery_env()
-	var thread := Thread.new()
-	var start_err := thread.start(func() -> String:
-		return McpClientConfigurator.find_uvx()
-	)
-	var found := str(thread.wait_to_finish()) if start_err == OK else ""
-
-	if saved_home.is_empty():
-		OS.unset_environment("HOME")
-	else:
-		OS.set_environment("HOME", saved_home)
-	if saved_profile.is_empty():
-		OS.unset_environment("USERPROFILE")
-	else:
-		OS.set_environment("USERPROFILE", saved_profile)
-	McpClientConfigurator.invalidate_uvx_cli_cache()
-	McpClientConfigurator.warm_update_actor_discovery_env()
-	_remove_dir_recursive(fake_home)
-
-	assert_eq(start_err, OK, "startup actor discovery worker must start")
-	assert_eq(found, expected, "worker must use the main-thread-warmed home snapshot")
-
-
 func test_editor_setting_lookup_worker_thread_serves_snapshot() -> void:
 	## #691: mode_override() runs on the startup walk's discovery worker
 	## (via get_server_command) and EditorSettings is not thread-safe. A
@@ -6397,3 +6348,79 @@ func test_text_remove_server_entry_bom_no_match_returns_unchanged() -> void:
 	var body := "﻿" + '{"mcpServers": {"other": {"command": "x"}}}'
 	var updated: String = helper._text_remove_server_entry(body, PackedStringArray(["mcpServers"]), McpClientConfigurator.SERVER_NAME)
 	assert_eq(updated, body, "no-op must leave file byte-for-byte identical; got: %s" % updated)
+
+
+# ----- post-update migration ownership -----
+
+
+func test_launch_mentions_godot_ai_recognizes_our_launch_shapes_only() -> void:
+	assert_true(McpClient.launch_mentions_godot_ai("uvx --from godot-ai==3.2.4 godot-ai"))
+	assert_true(McpClient.launch_mentions_godot_ai("/x/bin/godot-ai attach"))
+	assert_true(McpClient.launch_mentions_godot_ai("C:\\Tools\\godot-ai.exe attach"))
+	assert_true(McpClient.launch_mentions_godot_ai("python -m godot_ai"))
+	assert_true(McpClient.launch_mentions_godot_ai("uvx godot-ai==4.0.0"))
+	assert_false(McpClient.launch_mentions_godot_ai("/usr/bin/python3 my_server.py"))
+	## Mentions that are not launches: a docs URL, a project directory, a name.
+	assert_false(McpClient.launch_mentions_godot_ai("node server.js https://example.com/godot-ai/docs"))
+	assert_false(McpClient.launch_mentions_godot_ai("/home/me/projects/godot-ai/run.sh"))
+	assert_false(McpClient.launch_mentions_godot_ai("my-godot-ai-proxy --port 1"))
+	assert_false(McpClient.launch_mentions_godot_ai("godot-ai-helper"))
+	assert_false(McpClient.launch_mentions_godot_ai(""))
+	## Structured values: a path with spaces stays whole; a URI is never an executable.
+	assert_true(McpClient.launch_values_mention_godot_ai(
+		PackedStringArray(["C:\\Program Files\\Godot AI\\godot-ai.exe", "attach"])
+	))
+	assert_true(McpClient.launch_values_mention_godot_ai(PackedStringArray(["/opt/godot ai/bin/godot-ai"])))
+	assert_false(McpClient.launch_values_mention_godot_ai(PackedStringArray(["https://example.com/godot-ai"])))
+	assert_false(McpClient.launch_values_mention_godot_ai(PackedStringArray(["curl", "http://x/godot-ai/"])))
+	assert_false(McpClient.launch_mentions_godot_ai("node https://example.com/godot-ai"))
+
+
+func test_json_mismatch_reports_whether_the_existing_entry_is_ours() -> void:
+	## The post-update major migration rewrites a mismatched entry only when it
+	## launches Godot AI; a foreign command under our name must read as not owned.
+	var client := McpClient.new()
+	client.id = "ownership_test"
+	client.display_name = "Ownership Test"
+	client.config_type = "json"
+	client.server_key_path = PackedStringArray(["mcpServers"])
+	client.command_shape = McpClient.CommandShape.FLAT
+	var launch := {"ok": true, "command": "/x/bin/uvx", "args": ["--from", "godot-ai==4.0.0", "godot-ai", "attach"]}
+	var foreign := McpJsonStrategy._entry_status_details(
+		client, {"command": "/usr/bin/python3", "args": ["my_server.py"]}, "http://x", launch
+	)
+	assert_eq(int(foreign.get("status", -1)), McpClient.Status.CONFIGURED_MISMATCH)
+	assert_false(bool(foreign.get("owned", true)), "a foreign command is not ours to rewrite")
+	var stale := McpJsonStrategy._entry_status_details(
+		client, {"command": "/x/bin/uvx", "args": ["--from", "godot-ai==3.2.4", "godot-ai", "attach"]}, "http://x", launch
+	)
+	assert_eq(int(stale.get("status", -1)), McpClient.Status.CONFIGURED_MISMATCH)
+	assert_true(bool(stale.get("owned", false)), "a stale Godot AI pin is ours to repin")
+	var current := McpJsonStrategy._entry_status_details(
+		client, {"command": "/x/bin/uvx", "args": launch["args"]}, "http://x", launch
+	)
+	assert_eq(int(current.get("status", -1)), McpClient.Status.CONFIGURED)
+	## Our own name inside the entry (or as its key) must never count as a launch.
+	var named := McpJsonStrategy._entry_status_details(
+		client, {"name": "godot-ai", "command": "/usr/bin/python3", "args": ["srv.py"]}, "http://x", launch
+	)
+	assert_false(bool(named.get("owned", true)), "the entry name is not a launch")
+	assert_eq(
+		McpClient.entry_launch_values({"name": "godot-ai", "command": "x", "args": ["a", 1]}),
+		PackedStringArray(["x", "a", "1"]),
+	)
+	var url_entry := McpJsonStrategy._entry_status_details(
+		client, {"command": "node", "args": ["https://example.com/godot-ai"]}, "http://x", launch
+	)
+	assert_false(bool(url_entry.get("owned", true)), "a URL ending in our name is not a launch")
+	var spaced := McpJsonStrategy._entry_status_details(
+		client, {"command": "C:\\Program Files\\Godot AI\\godot-ai.exe", "args": ["attach"]}, "http://x", launch
+	)
+	assert_true(bool(spaced.get("owned", false)), "a Windows path with spaces is ours")
+	var docs_link := McpJsonStrategy._entry_status_details(
+		client,
+		{"command": "node", "args": ["server.js", "https://example.com/godot-ai/docs"]},
+		"http://x",
+		launch,
+	)
+	assert_false(bool(docs_link.get("owned", true)), "a URL containing our name is not a launch")

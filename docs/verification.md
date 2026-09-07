@@ -3,6 +3,11 @@
 Part of the Godot AI agent guide — see [AGENTS.md](../AGENTS.md) for the always-loaded rules.
 
 
+Normal CI runs the full handler suite once per OS, followed by a single
+`script/ci-reload-test` reload with session, scene-continuity, and log probes.
+Nightly diagnostics use `script/ci-reload-test --stress`: ten reloads followed
+by another handler-suite run, preserving the cumulative crash regression.
+
 The full pre-commit gauntlet. Run this before every commit — Python mocks do not
 catch GDScript bugs, editor API regressions, or undo/redo issues.
 
@@ -80,8 +85,7 @@ editor to *look at* — the step 6 smoke test — or when nothing is running yet
    ruff check src/ tests/ script/ \
      script/ci-game-capture-smoke script/ci-stale-server-smoke \
      script/ci-unsupported-godot-smoke script/generate-star-history \
-     script/local-game-capture-diag script/local-self-update-smoke \
-     script/v4-release
+     script/local-game-capture-diag script/v4-release
    ```
    Lint must pass.
 2. `pytest -v` — all environment-independent Python tests pass. Then run the
@@ -111,9 +115,10 @@ editor to *look at* — the step 6 smoke test — or when nothing is running yet
    - For write tools: verify the change is visible in the editor, and verify undo works (Ctrl+Z in Godot)
    - For read tools: compare response against what you see in the editor
    - Check `editor_state` to confirm readiness field is present
-7. If the change touches self-update, plugin reload handoff, or install/extract
-   logic, run `python script/local-self-update-smoke` and click Update in the
-   launched fixture.
+7. If the change touches self-update, the migration bridge, or plugin
+   disable/enable, the updater row in step 2 and
+   `test_project/tests/test_update_installer.gd` in step 5 are the required
+   coverage ([self-update.md](self-update.md)).
 8. Only commit when all of the above are green
 
 ## Testing against Godot

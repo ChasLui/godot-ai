@@ -2,6 +2,38 @@
 
 This guide is for any AI assistant working in this repository. Keep Claude-specific files such as `.claude/CLAUDE.md` and `.claude/skills/*` as thin pointers to this shared guidance.
 
+## PR activity monitoring
+
+Whenever a PR is created, opened, or identified in the conversation, check its
+state and start monitoring without asking again, unless it is already closed
+or merged. This authorizes read-only monitoring and notifications, not posting
+comments, changing code, rerunning CI, or merging.
+
+- Discover the current environment's tools. Prefer a native PR activity
+  subscription (such as `subscribe_pr_activity`) when actually available;
+  confirm success and retain its subscription identifier. Do not assume a
+  particular tool namespace or that GitHub access includes subscriptions.
+- If subscriptions are unavailable but durable task automations are supported,
+  reuse an existing monitor for the same repository and PR or create a
+  15-minute heartbeat attached to the current task. Poll PR comments, inline
+  review comments, submitted reviews, CI results, merge conflicts, and PR state
+  using the authenticated GitHub connector or `gh`. Keep the last seen state,
+  report existing actionable feedback once, and notify only on new actionable
+  feedback, failures, conflicts, access failures, or closure/merge. Stay quiet
+  otherwise; stop the monitor after closure/merge.
+- If neither capability is available, check current feedback and CI, then
+  explicitly report that persistent monitoring was not started and which
+  capability is missing. A one-time read, shell polling process, GitHub email
+  subscription, or written instruction is not a durable task subscription.
+- Report the confirmed monitoring mechanism when starting it. Never claim
+  monitoring is active without a successful subscription/automation response.
+
+This policy applies to local and cloud sessions. Check capabilities separately
+in each environment: local Codex settings and credentials do not establish
+cloud tool availability. Do not add a guessed MCP endpoint or install an
+integration merely because it has GitHub in its name. A future provider must
+be verified to expose the subscription and deliver events to the task.
+
 ## What this project is
 
 A production-grade MCP server for Godot. Python server (FastMCP v3) communicates over WebSocket with a GDScript editor plugin. AI clients call MCP tools → Python routes commands → Godot plugin executes against the editor API → results flow back.
@@ -127,11 +159,15 @@ Or in cmd: `mklink /J test_project\addons\godot_ai ..\..\plugin\addons\godot_ai`
 **When troubleshooting any dev-environment / setup / dependency / symlink issue, scan `script/` first** for an existing fixer before doing it by hand. The project ships scripts for a reason — bypassing them re-introduces the bugs they were written to handle.
 
 - Server start/adopt/teardown, discovery tiers, `editor_reload_plugin`: [docs/server-lifecycle.md](docs/server-lifecycle.md)
-- Cutting a release, and the self-update install path: [docs/releasing.md](docs/releasing.md).
-  **Any change touching update discovery, `update_manager.gd`,
-  `update_coordinator.gd`, `update_transaction.py`, `release_verify.py`, plugin
-  disable/enable or startup barriers, or the signed release layout must run
-  `python script/local-self-update-smoke`.**
+- Cutting a release: [docs/releasing.md](docs/releasing.md).
+- Self-update, migration capsule, or release verification changes:
+  [docs/self-update.md](docs/self-update.md). **Any change touching update
+  discovery, `update_manager.gd`, `release_verifier.gd`, `update_installer.gd`,
+  `release_verify.py`, the migration bridge, plugin disable/enable, or the
+  signed release layout must pass `test_project/tests/test_update_installer.gd`
+  and the three real-editor scenarios in
+  `tests/integration/test_self_update_upgrade_paths.py` (run with `GODOT_BIN`
+  set).**
 
 ## Testing
 

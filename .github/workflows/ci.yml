@@ -3,9 +3,22 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [main, beta]
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
   pull_request:
-    branches: [main, beta]
+    branches: [main, codex/v4-release-promotion]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+
+## One run per PR at a time: a new push cancels the previous run's 30-odd
+## jobs instead of letting two full matrices race. Pushes to main are never
+## cancelled, so every merged commit keeps a complete record.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 ## Stop CI from injecting fake "installs" into the telemetry dashboard or
 ## burning streaming-insert quota on the backend. Opt-out is fully
@@ -28,11 +41,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Process, path, lease, and updater behavior is platform-specific.
-        # Exercise the supported Python floor, default, and ceiling on every
-        # required desktop platform rather than inferring six combinations.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Two independent axes, not their product. Interpreter-version
+        # behavior is the same on every OS, so every supported version runs
+        # on Linux, where a cell costs ~4 minutes. Process, path, lease, and
+        # updater behavior is OS-specific, so Windows (the platform with the
+        # most platform-specific code: kernel32 process identity, junctions,
+        # sharing-violation retries) runs the floor and the ceiling, and macOS
+        # runs the ceiling; 3.14 is what uvx hands users (#746). The full
+        # 3x4 product cost twelve cells, four of them Windows at 10+ minutes
+        # each and four macOS cells that queued behind the runner limit, for
+        # no class of regression these seven cells do not catch.
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: windows-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.14"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,13 +78,29 @@ jobs:
 
       # Keep these conditions complementary so every matrix cell runs pytest
       # exactly once: with coverage on the Codecov cell, plain everywhere else.
+      #
+      # --basetemp keeps every tmp_path under the runner's short temp directory
+      # (D:\a\_temp on Windows) instead of the deep per-user Temp tree. The
+      # updater canonicalizes paths by enumerating each ancestor directory on
+      # Windows and macOS, so ancestor fan-out is a per-call cost for the
+      # transaction, updater and qualification suites; together with the
+      # failed-only tmp_path retention in pyproject.toml this keeps that walk
+      # short for the whole run. --durations reports the slowest tests so a
+      # regression in a single test is visible in the hosted log.
+      # -n auto: one worker per runner core. The suite is 2,700 tests at
+      # ~0.1 s each, so serial rows cost 4-6 minutes and set the wall clock;
+      # the whole suite, integration included, runs clean under xdist
+      # because its fixtures allocate free ports per test (verified locally:
+      # 403 s serial -> 108 s parallel, zero ordering failures).
       - name: Run tests
         if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13'
-        run: pytest -v
+        run: pytest -n auto -v --durations=25 --basetemp="${{ runner.temp }}/pytest-basetemp"
 
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
-        run: pytest --cov=godot_ai --cov-report=xml -v
+        run: >-
+          pytest -n auto --cov=godot_ai --cov-report=xml -v --durations=25
+          --basetemp="${{ runner.temp }}/pytest-basetemp"
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
@@ -67,6 +110,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Lint
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
         run: >-
           ruff check src/ tests/ script/
           script/ci-game-capture-smoke
@@ -81,8 +125,35 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
         run: python script/architecture_simplification_gates.py --check
 
+  build-distributions:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install "build==1.6.0"
+          python -m build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dist
+          path: dist/
+
   release-smoke:
     name: Release smoke / ${{ matrix.os }}
+    needs: build-distributions
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -101,10 +172,11 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Build sdist and wheel
-        run: |
-          python -m pip install "build==1.6.0"
-          python -m build
+      - name: Download shared distributions
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: dist
+          path: dist/
 
       - name: Install built wheel in a clean venv
         shell: bash
@@ -138,13 +210,6 @@ jobs:
           fi
           "$PY" -m pip install dist/*.tar.gz
           "$GODOT_AI" --version
-
-      - name: Upload build artifacts
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: dist
-          path: dist/
 
   godot-tests:
     name: Godot tests / ${{ matrix.label }}
@@ -196,15 +261,26 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
-      - name: Self-update forward upgrade regression
+      - name: Real-editor updater scenarios
+        # Linux only on pull requests and pushes: the lean updater's real-editor
+        # scenarios (signed update, v3 capsule crossing, post-swap rollback) plus
+        # the restart, bridge, reload-persistence and qualification-fixture
+        # suites. Windows and macOS run the same files nightly
+        # (nightly-diagnostics.yml); their editor starts are 3-5x slower and the
+        # per-OS Godot and smoke jobs already prove the plugin and server start
+        # on every OS. The local-files delivery duplicate runs nightly;
+        # ordinary CI exercises private HTTPS. See docs/self-update.md.
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         timeout-minutes: 12
         run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            xvfb-run -a env GODOT_BIN=godot pytest -q tests/integration/test_self_update_upgrade_paths.py
-          else
-            GODOT_BIN=godot pytest -q tests/integration/test_self_update_upgrade_paths.py
-          fi
+          xvfb-run -a env GODOT_BIN=godot pytest -v -s --durations=0 -k 'not local-files' --basetemp="${RUNNER_TEMP}/pytest-basetemp" \
+            tests/integration/test_godot_editor_restart.py \
+            tests/integration/test_migration_bridge_failures.py \
+            tests/integration/test_self_update_upgrade_paths.py \
+            tests/integration/test_qualification_https.py \
+            tests/integration/test_plugin_reload_persistence.py \
+            tests/integration/test_runtime_qualification_driver.py
 
       - name: Start MCP server
         shell: bash
@@ -235,9 +311,6 @@ jobs:
 
       - name: Reload smoke test
         shell: bash
-        ## Ten Windows reload/import cycles consume roughly two minutes before
-        ## the post-reload suite begins. Keep the outer step budget above the
-        ## script's independent 90-second MCP-call ceiling.
         timeout-minutes: 5
         run: bash script/ci-reload-test
 
@@ -259,6 +332,8 @@ jobs:
           tail -n 500 godot-editor.log || echo "(log not found)"
           echo "===== godot-import.log (last 200 lines) ====="
           tail -n 200 godot-import.log || echo "(log not found)"
+          echo "===== mcp-server.log (last 300 lines) ====="
+          tail -n 300 mcp-server.log || echo "(log not found)"
 
   unsupported-godot-floor:
     name: Unsupported Godot refusal / ${{ matrix.godot-version }}
@@ -286,8 +361,8 @@ jobs:
   # Verifies that startup refuses an authenticated but mismatched godot-ai
   # server without spending destructive authority. The occupant remains alive;
   # only a later explicit Dock recovery intent may authorize kill/restart.
-  stale-server-smoke:
-    name: Stale server smoke / ${{ matrix.label }}
+  server-ownership-smoke:
+    name: Server ownership smoke / ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     env:
       GODOT_AI_MODE: dev
@@ -333,157 +408,30 @@ jobs:
           godot --headless --path test_project --import > godot-import.log 2>&1 || true
           bash script/ci-check-gdscript godot-import.log
 
+      # Each invocation starts fresh processes and restores/removes its private
+      # capability record in finally. The next invocation checks both ports
+      # are free before starting; a leaked process fails the next smoke.
       - name: Run stale-server smoke
         shell: bash
         timeout-minutes: 3
         run: python script/ci-stale-server-smoke --log-dir .
 
-      - name: Dump editor log on failure
-        if: failure()
-        shell: bash
-        run: |
-          echo "===== godot-stale-smoke.log (last 500 lines) ====="
-          tail -n 500 godot-stale-smoke.log || echo "(log not found)"
-          echo "===== stale-occupant.log (last 200 lines) ====="
-          tail -n 200 stale-occupant.log || echo "(log not found)"
-          echo "===== godot-import.log (last 200 lines) ====="
-          tail -n 200 godot-import.log || echo "(log not found)"
-
-  # #759/#764 integration regression: a matching-version EditorSettings
-  # record naming a dead PID must not transfer teardown ownership to the
-  # compatible external server now occupying the port. Reload must preserve
-  # that server and reconnect through a distinct replacement editor session.
-  stale-compatible-reload-smoke:
-    name: Stale compatible reload smoke / ${{ matrix.label }}
-    runs-on: ${{ matrix.os }}
-    env:
-      GODOT_AI_MODE: dev
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            label: Linux
-          - os: macos-latest
-            label: macOS
-          - os: windows-latest
-            label: Windows
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Build plugin link
-        shell: bash
-        run: bash script/verify-worktree
-
-      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2
-        with:
-          version: 4.7.0
-          use-dotnet: false
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
-
-      - name: Import and validate GDScript
-        shell: bash
-        timeout-minutes: 3
-        run: |
-          godot --headless --path test_project --import > godot-import.log 2>&1 || true
-          bash script/ci-check-gdscript godot-import.log
-
       - name: Run stale-compatible reload smoke
+        if: ${{ !cancelled() }}
         shell: bash
         timeout-minutes: 3
         run: python script/ci-stale-server-smoke --mode stale-compatible-reload --log-dir .
 
-      - name: Dump editor and server logs on failure
-        if: failure()
-        shell: bash
-        run: |
-          echo "===== godot-stale-compatible-reload-smoke.log (last 500 lines) ====="
-          tail -n 500 godot-stale-compatible-reload-smoke.log || echo "(log not found)"
-          echo "===== stale-compatible-external-server.log (last 300 lines) ====="
-          tail -n 300 stale-compatible-external-server.log || echo "(log not found)"
-          echo "===== godot-import.log (last 200 lines) ====="
-          tail -n 200 godot-import.log || echo "(log not found)"
-
-  # Mirror image of stale-server-smoke: verifies the plugin's NON-recoverable
-  # path when port 8000 is held by a genuinely foreign (non-godot-ai) process.
-  # It gets no ownership proof, so it must land in terminal INCOMPATIBLE with
-  # can_recover_incompatible == false, log a suggested free port, and make NO
-  # kill attempt — leaving the foreign occupant alive. Covered today only by
-  # mocked GDScript unit tests (test_dock.gd); this drives the real upstream
-  # classification in CI. Separate job (not a step in stale-server-smoke) so
-  # the stale run's respawned port-8000 server can't bleed into this scenario.
-  foreign-server-smoke:
-    name: Foreign server smoke / ${{ matrix.label }}
-    runs-on: ${{ matrix.os }}
-    env:
-      GODOT_AI_MODE: dev
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            label: Linux
-          - os: macos-latest
-            label: macOS
-          - os: windows-latest
-            label: Windows
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Build plugin link
-        shell: bash
-        run: bash script/verify-worktree
-
-      - uses: chickensoft-games/setup-godot@c233594225991af5aec714e52457cc76d6df8fa2 # v2
-        with:
-          version: 4.7.0
-          use-dotnet: false
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
-
-      - name: Import and validate GDScript
-        shell: bash
-        timeout-minutes: 3
-        run: |
-          godot --headless --path test_project --import > godot-import.log 2>&1 || true
-          bash script/ci-check-gdscript godot-import.log
-
       - name: Run foreign-server smoke
+        if: ${{ !cancelled() }}
         shell: bash
         timeout-minutes: 3
         run: python script/ci-stale-server-smoke --mode foreign --log-dir .
 
-      - name: Dump editor log on failure
+      - name: Dump ownership smoke logs on failure
         if: failure()
         shell: bash
-        run: |
-          echo "===== godot-foreign-smoke.log (last 500 lines) ====="
-          tail -n 500 godot-foreign-smoke.log || echo "(log not found)"
-          echo "===== godot-import.log (last 200 lines) ====="
-          tail -n 200 godot-import.log || echo "(log not found)"
+        run: tail -n 300 ./godot-*.log ./*-occupant.log ./stale-compatible-external-server.log
 
   # Separate job from godot-tests: the capture smoke test needs a real
   # rendering driver (null RenderingDevice in --headless produces empty
@@ -665,6 +613,10 @@ jobs:
           tail -n 500 godot-editor.log || echo "(log not found)"
           echo "===== godot-import.log (last 200 lines) ====="
           tail -n 200 godot-import.log || echo "(log not found)"
+          ## The server's side of a bridge drop (#958): keepalive kills,
+          ## circuit-breaker trips, command timeouts, with timestamps.
+          echo "===== mcp-server.log (last 300 lines) ====="
+          tail -n 300 mcp-server.log || echo "(log not found)"
 
       - name: Upload capture diagnostics
         if: failure()
@@ -674,4 +626,5 @@ jobs:
           path: |
             capture-smoke-diag/
             godot-editor.log
+            mcp-server.log
           if-no-files-found: ignore
