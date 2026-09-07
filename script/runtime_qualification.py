@@ -651,6 +651,7 @@ def exact_a_to_b(
             uvx = shutil.which("uvx", path=environment.get("PATH"))
             support.require(uvx is not None, "uvx is required for runtime qualification")
             _write_client_pin(Path(environment["CODEX_HOME"]), uvx, records["a"]["version"])
+            print("Installing signed candidate A in the disposable project", flush=True)
             command = [
                 sys.executable,
                 str(support.ROOT / "script/v4-release"),
@@ -696,6 +697,7 @@ def exact_a_to_b(
                         "PRIVATE_HTTPS_CERTIFICATE": str(certificate),
                     }
                 )
+                print(f"Running the A-to-B update in Godot {godot_version}", flush=True)
                 completed = subprocess.run(
                     _editor_command(executable, project),
                     cwd=work,
@@ -712,6 +714,7 @@ def exact_a_to_b(
                 support.require(completed.returncode == 0, "real Godot A-to-B update failed")
                 # The swap restarts the editor; the process above exits and
                 # the restarted editor finishes the case and writes the result.
+                print("Waiting for the restarted editor to report candidate B", flush=True)
                 _wait_for_runtime_result(project / "runtime-result.json", TIMEOUT_SECONDS)
                 support.require(
                     release.downloads
@@ -726,12 +729,12 @@ def exact_a_to_b(
             capability_dir = _capability_directory(environment)
             _wait_for_capability_release(capability_dir)
             _scrub_private_material(key, capability_dir)
+        print("Verifying update evidence and private-data cleanup", flush=True)
         result = _read_runtime_result(project)
         support.require(result.get("status") == "passed", "runtime driver did not pass")
         live = project / "addons/godot_ai"
-        support.require(
-            support.inventory(live) == _manifest_tree(candidates / "b"), "live tree is not exact B"
-        )
+        live_tree = support.inventory(live)
+        support.require(live_tree == _manifest_tree(candidates / "b"), "live tree is not exact B")
         config = Path(environment["CODEX_HOME"]) / "config.toml"
         text = config.read_text(encoding="utf-8")
         support.require(
@@ -744,7 +747,6 @@ def exact_a_to_b(
         update = _verify_lean_update(project, candidates, records)
         private_values = (release.token, index, _private_index_capability(index), ORIGIN)
         _require_values_absent(project, private_values)
-        _require_values_absent(project / UPDATE_STATE, private_values)
         _require_values_absent(output, private_values)
         return {
             **result,
@@ -754,7 +756,7 @@ def exact_a_to_b(
                 "version": actual_godot_version,
             },
             "index_artifacts_requested": sorted(set(index_requests)),
-            "live_tree": support.inventory(live),
+            "live_tree": live_tree,
             "backend_stopped": True,
             **update,
         }
