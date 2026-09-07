@@ -1,0 +1,93 @@
+"""Publication resume paths that the first v4.0.0 release exercised for real."""
+
+from __future__ import annotations
+
+import urllib.error
+
+import pytest
+
+from script import release_promotion as promotion
+from script import release_support as support
+
+BASE = f"repos/{support.REPOSITORY}"
+
+
+def test_release_for_tag_finds_the_draft_the_tag_endpoint_hides(monkeypatch):
+    draft = {"tag_name": "v4.0.0", "draft": True, "id": 1}
+
+    def fake_gh(*args, allow_missing=False):
+        if args[0].startswith(f"{BASE}/releases/tags/"):
+            assert allow_missing
+            return None
+        if args[0] == f"{BASE}/releases?per_page=100":
+            return [{"tag_name": "v3.2.5", "draft": False}, draft]
+        raise AssertionError(args)
+
+    monkeypatch.setattr(promotion, "gh", fake_gh)
+    assert promotion._release_for_tag(BASE, "v4.0.0") == draft
+    assert promotion._release_for_tag(BASE, "v4.0.1") is None
+
+    published = {"tag_name": "v4.0.0", "draft": False}
+    monkeypatch.setattr(promotion, "gh", lambda *a, allow_missing=False: published)
+    assert promotion._release_for_tag(BASE, "v4.0.0") is published
+
+
+def _not_found(url):
+    raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+
+def test_verify_pypi_waits_for_the_index_to_list_a_fresh_upload(monkeypatch):
+    record = {"version": "4.0.0", "files": {}}
+    calls = []
+
+    def lagging_index(url):
+        calls.append(url)
+        if len(calls) < 3:
+            _not_found(url)
+        return {"urls": []}
+
+    monkeypatch.setattr(promotion, "public_json", lagging_index)
+    monkeypatch.setattr(promotion.time, "sleep", lambda seconds: None)
+    with pytest.raises(support.ReleaseError, match="incomplete or unexpected"):
+        promotion.verify_pypi(record)  # listed on the third try, then the inventory check runs
+    assert len(calls) == 3
+
+    monkeypatch.setattr(promotion, "public_json", _not_found)
+    monkeypatch.setattr(promotion, "PYPI_INDEX_WAIT_SECONDS", 0.0)
+    with pytest.raises(support.ReleaseError, match="still does not list 4.0.0"):
+        promotion.verify_pypi(record)
+
+    def forbidden(url):
+        raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(promotion, "public_json", forbidden)
+    with pytest.raises(urllib.error.HTTPError):
+        promotion.verify_pypi(record)  # only a 404 is the index lagging
+
+
+def test_verify_pypi_never_waits_past_its_deadline(monkeypatch):
+    # A controlled clock: each lookup costs 100 s, so the third 404 lands at
+    # 300 s and the wait must clamp to the budget rather than add a poll.
+    record = {"version": "4.0.0", "files": {}}
+    clock = {"now": 0.0}
+    sleeps = []
+    monkeypatch.setattr(promotion.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(promotion.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(promotion, "PYPI_INDEX_WAIT_SECONDS", 300.0)
+    monkeypatch.setattr(promotion, "PYPI_INDEX_POLL_SECONDS", 15.0)
+
+    def lookup(url):
+        clock["now"] += 100.0
+        _not_found(url)
+
+    monkeypatch.setattr(promotion, "public_json", lookup)
+    with pytest.raises(support.ReleaseError, match="still does not list 4.0.0"):
+        promotion.verify_pypi(record)
+    assert sleeps == [15.0, 15.0], "the third lookup hit the deadline; no sleep past it"
+
+    clock["now"] = 0.0
+    sleeps.clear()
+    monkeypatch.setattr(promotion, "PYPI_INDEX_WAIT_SECONDS", 105.0)
+    with pytest.raises(support.ReleaseError, match="still does not list 4.0.0"):
+        promotion.verify_pypi(record)
+    assert sleeps == [5.0], "a sleep is clamped to the remaining budget"

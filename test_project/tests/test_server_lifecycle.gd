@@ -174,9 +174,8 @@ func test_endpoint_reprobe_for_an_owned_server_stops_the_exact_grant_first() -> 
 func test_endpoint_reprobe_gives_up_after_its_budget() -> void:
 	var manager := _manager()
 	manager._endpoint_recovery_attempts = Lifecycle.ENDPOINT_RECOVERY_DELAYS_SECONDS.size()
-	## Still inside the stability window when READY arrives: the budget carries over.
-	manager._endpoint_recovery_started_msec = Time.get_ticks_msec()
 	_complete_adoption(manager)
+	## Lost again well inside the stability minute: the budget carries over.
 	manager.transport_lost("endpoint vanished")
 	var snapshot := manager.get_status_dict()
 	assert_eq(snapshot.episode_state, Lifecycle.BLOCKED)
@@ -190,11 +189,12 @@ func test_endpoint_reprobe_gives_up_after_its_budget() -> void:
 func test_endpoint_reprobe_budget_resets_once_the_server_holds() -> void:
 	var manager := _manager()
 	manager._endpoint_recovery_attempts = 3
-	manager._endpoint_recovery_started_msec = Time.get_ticks_msec() - Lifecycle.ENDPOINT_RECOVERY_STABLE_MS
 	_complete_adoption(manager)
-	assert_eq(int(manager.get_status_dict().recovery_attempt), 0, "a server that held for a minute earns a fresh budget")
+	assert_eq(int(manager.get_status_dict().recovery_attempt), 3, "reaching READY alone keeps the spent budget")
+	## The server then holds for the stability minute before the next loss.
+	manager._ready_since_msec = Time.get_ticks_msec() - Lifecycle.ENDPOINT_RECOVERY_STABLE_MS
 	manager.transport_lost("endpoint vanished")
-	assert_eq(int(manager.get_status_dict().recovery_attempt), 1)
+	assert_eq(int(manager.get_status_dict().recovery_attempt), 1, "a server that held for a minute earns a fresh budget")
 
 
 func test_owned_endpoint_loss_stops_exact_grant_before_new_start() -> void:

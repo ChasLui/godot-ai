@@ -46,7 +46,8 @@ const ENDPOINT_RECOVERY_DELAYS_SECONDS: Array[float] = [1.0, 2.0, 4.0, 8.0, 16.0
 const ENDPOINT_RECOVERY_STABLE_MS := 60_000
 
 var _endpoint_recovery_attempts := 0
-var _endpoint_recovery_started_msec := 0
+## When the current READY began; a loss after a stable minute earns a fresh budget.
+var _ready_since_msec := 0
 ## The episode whose re-probe is scheduled; 0 when none is pending.
 var _endpoint_recovery_pending_episode := 0
 const MAX_STATUS_BODY_BYTES := 8 * 1024
@@ -289,6 +290,12 @@ func transport_lost(reason := "Authenticated server endpoint was lost.") -> void
 	if str(_episode.get("state")) != READY:
 		return
 	_transport = null
+	## Stability is measured from the moment the server became READY, not
+	## from when a recovery started, so a slow recovery cannot refresh its
+	## own budget and a server that held for a minute does.
+	if _ready_since_msec != 0 and Time.get_ticks_msec() - _ready_since_msec >= ENDPOINT_RECOVERY_STABLE_MS:
+		_endpoint_recovery_attempts = 0
+	_ready_since_msec = 0
 	var limit := ENDPOINT_RECOVERY_DELAYS_SECONDS.size()
 	if _endpoint_recovery_attempts >= limit:
 		_block(
@@ -326,7 +333,6 @@ func recover_lost_endpoint(episode_id: int) -> bool:
 		_endpoint_recovery_pending_episode = 0
 		return false
 	_endpoint_recovery_pending_episode = 0
-	_endpoint_recovery_started_msec = Time.get_ticks_msec()
 	start_server()
 	return str(_episode.get("state")) != BLOCKED
 
@@ -493,13 +499,7 @@ func _ready(kind: String, transport, version: String) -> void:
 		_block("invalid_transport", "The server returned invalid transport authority.")
 		return
 	_transport = transport
-	## A recovery that reaches READY spends budget until the server has held
-	## for a while; a fresh start, or a stable server, gets the full budget.
-	if (
-		_endpoint_recovery_started_msec == 0
-		or Time.get_ticks_msec() - _endpoint_recovery_started_msec >= ENDPOINT_RECOVERY_STABLE_MS
-	):
-		_endpoint_recovery_attempts = 0
+	_ready_since_msec = maxi(1, Time.get_ticks_msec())
 	_episode["state"] = READY
 	_episode["phase"] = ""
 	_episode["ready_kind"] = kind
