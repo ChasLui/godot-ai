@@ -697,7 +697,7 @@ def test_github_publication_resumes_without_clobber_or_rebuilding(
     monkeypatch.setattr(promotion.subprocess, "run", upload)
     downloads = []
     monkeypatch.setattr(promotion, "verify_public_file", lambda *args: downloads.append(args))
-    assert set(promotion.publish_github(candidates / "a", record)) == support.RELEASE_NAMES
+    assert set(promotion.publish_github(candidates / "a", record, "3.2.5")) == support.RELEASE_NAMES
     assert events[0] == ("pypi-verified",)
     assert not state["release"]["draft"]
     assert len(downloads) == 6

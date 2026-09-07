@@ -1,0 +1,241 @@
+# Changelog
+
+User-facing changes in Godot AI, newest first. Every GitHub Release links to
+this file at the release's exact source commit, and its "What's Changed"
+section lists every merged pull request; this file keeps the part worth
+reading. Release engineering: [docs/releasing.md](docs/releasing.md).
+
+## 4.0.2 (2026-09-07)
+
+Fixes the in-editor updater's download. Nothing else changed.
+[Compare v4.0.1...v4.0.2](https://github.com/hi-godot/godot-ai/compare/v4.0.1...v4.0.2).
+
+### Fixed
+
+- The dock's **Update** failed with `download failed (302)` on Windows, macOS,
+  and Linux. Two independent causes: with `max_redirects = 0`, Godot's
+  `HTTPRequest` reports `RESULT_REDIRECT_LIMIT_REACHED` for GitHub's first
+  redirect instead of a success carrying a 3xx code, so the manual redirect
+  branch was unreachable; and GitHub's release-asset CDN now uses a
+  `/github-production-release-asset/<repository id>/...` path that the trusted
+  path check rejected. The updater now treats that result as a redirect and
+  pins the current CDN namespace to this repository's ID, keeping the
+  destination validation and redirect limit
+  ([#997](https://github.com/hi-godot/godot-ai/pull/997); reported in
+  [#998](https://github.com/hi-godot/godot-ai/issues/998) and
+  [#989](https://github.com/hi-godot/godot-ai/issues/989)).
+- The private origin used by release qualification issues a real redirect
+  before serving bytes, so every A-to-B update test now exercises this path.
+
+### Upgrading
+
+- **From 3.2.5:** click **Update** with Godot 4.7 or newer. You go directly to
+  4.0.2.
+- **From 4.0.0 or 4.0.1:** those versions cannot download this fix with their
+  own Update button. Follow the one-time recovery in
+  [#999](https://github.com/hi-godot/godot-ai/issues/999) (also documented in
+  [docs/releasing.md](docs/releasing.md#recovering-the-400--401-http-302-download-failure)).
+  Afterwards the Update button works again.
+
+## 4.0.1 (2026-09-07)
+
+[Compare v4.0.0...v4.0.1](https://github.com/hi-godot/godot-ai/compare/v4.0.0...v4.0.1).
+
+### Fixed
+
+- After the first ordinary editor start following the v4 migration, client
+  rows stayed on **Installing…** or **Checking…**, **Configure all** was greyed
+  out, and `client_manage(op="status")` timed out. The client job owner's
+  `_ready` ran after `activate()` and switched its polling off
+  ([#991](https://github.com/hi-godot/godot-ai/pull/991) by @Noniv; closes
+  [#990](https://github.com/hi-godot/godot-ai/issues/990), and the stuck-dock
+  half of [#989](https://github.com/hi-godot/godot-ai/issues/989)).
+
+### Changed
+
+- The README documents the Bazzite / Fedora Atomic capability-directory
+  workaround ([#995](https://github.com/hi-godot/godot-ai/pull/995); closes
+  [#993](https://github.com/hi-godot/godot-ai/issues/993)).
+- Release tooling resumes a hidden draft release and waits for PyPI's index
+  ([#987](https://github.com/hi-godot/godot-ai/pull/987)); Windows client
+  configuration is tested across editor restarts
+  ([#994](https://github.com/hi-godot/godot-ai/pull/994)).
+
+4.0.1 shares the download bug fixed in 4.0.2, so it could not be installed
+from 4.0.0 through the dock.
+
+## 4.0.0 (2026-09-07)
+
+Godot AI 4 is a breaking release built around one signed add-on tree, one
+authenticated transport, and an updater that replaces the whole tree or
+nothing. Migration guide: [docs/v4-migration.md](docs/v4-migration.md).
+[Compare v3.2.4...v4.0.0](https://github.com/hi-godot/godot-ai/compare/v3.2.4...v4.0.0)
+(3.2.5 was cut from the `release/v3` branch, so the comparison starts at the
+last shared tag).
+
+### Requirements and compatibility (breaking)
+
+- **Godot 4.7 or newer.** Godot 4.5 and 4.6 load the migration bridge only far
+  enough to report the requirement; below the floor the bridge restores the
+  previous 3.2.5 add-on instead of leaving a dead plugin. Upgrade Godot, reopen
+  the project, and retry the migration
+  ([#943](https://github.com/hi-godot/godot-ai/pull/943),
+  [#968](https://github.com/hi-godot/godot-ai/pull/968)).
+- **Python 3.11 through 3.14** for the server, provided through `uv`. Every
+  runtime dependency is an exact pin (FastMCP 3.4.7, MCP 1.29.1, websockets
+  17.1, Uvicorn 0.52.4, Starlette 1.6.0, Pydantic 2.13.5, httpx 0.28.1) and
+  the pins are checked again when the server starts. Dependency upgrades are
+  reviewed release changes ([#943](https://github.com/hi-godot/godot-ai/pull/943)).
+- **Clients connect through `godot-ai attach` over stdio.** A bare
+  `http://127.0.0.1:8000/mcp` entry can no longer authenticate. Use the dock's
+  **Configure**, or the **Run this manually** command it shows
+  ([#943](https://github.com/hi-godot/godot-ai/pull/943)).
+- **v3 and v4 do not interoperate.** A v3 plugin against a v4 server, or the
+  reverse, fails closed; there is no tokenless or legacy-handshake fallback
+  ([#943](https://github.com/hi-godot/godot-ai/pull/943)).
+- **Cherry Studio is no longer supported.** Its servers live in an internal
+  database Godot AI cannot safely edit; remove stale v3 entries in Cherry
+  Studio itself. **Zed** is manual-edit only, and the dock now reads Zed's
+  commented `settings.json` for status instead of reporting a parse error
+  ([#954](https://github.com/hi-godot/godot-ai/pull/954); closes
+  [#914](https://github.com/hi-godot/godot-ai/issues/914)).
+- **Distribution is GitHub Releases only.** The Godot Asset Store and Asset
+  Library listings stay on the last v3 release. A stable release publishes six
+  assets: the canonical `godot-ai-v4-plugin.zip` with its signed manifest and
+  signature, and the legacy-named `godot-ai-plugin.zip` triple, which is now
+  the v3-to-v4 migration capsule rather than an installable add-on. Never
+  extract release files over an existing `addons/godot_ai/`
+  ([#943](https://github.com/hi-godot/godot-ai/pull/943),
+  [#949](https://github.com/hi-godot/godot-ai/pull/949)).
+
+### Update and migration
+
+- **One-click migration from 3.2.5.** Click **Update**; Godot restarts once,
+  owned client entries are repinned, and the matching v4 server starts.
+  Nothing to download, verify, or edit by hand
+  ([#943](https://github.com/hi-godot/godot-ai/pull/943),
+  [#968](https://github.com/hi-godot/godot-ai/pull/968)).
+- **New in-editor updater.** The release manifest is RSA-4096 signed and binds
+  repository, channel, tag, version, source commit, archive hash, and every
+  file's size and hash. The updater verifies it, stages the tree under
+  `addons/.godot_ai_update/stage/`, swaps the live add-on with two renames,
+  restarts the editor, and hashes the new tree again before it runs. The
+  previous add-on is kept at `addons/.godot_ai_update/backup/<old version>/`
+  until the next successful update. The outcome is recorded in
+  `addons/.godot_ai_update/pending.json` as `success`, `rolled_back`, or
+  `repair_required`; nothing needs deleting by hand to make progress
+  ([#968](https://github.com/hi-godot/godot-ai/pull/968);
+  [docs/self-update.md](docs/self-update.md)).
+- An update refuses before touching anything when another editor is using the
+  same add-on, and it never overlays files into the live tree.
+- After an update, the plugin replaces a leftover server of the version it
+  just updated from and asks you to restart AI clients that were connected
+  during the update ([#968](https://github.com/hi-godot/godot-ai/pull/968)).
+- Client entries under the `godot-ai` name that launch something other than
+  Godot AI are reported in the editor output, not rewritten; ownership is
+  matched on exact launch tokens
+  ([#971](https://github.com/hi-godot/godot-ai/pull/971),
+  [#973](https://github.com/hi-godot/godot-ai/pull/973),
+  [#975](https://github.com/hi-godot/godot-ai/pull/975)).
+- **Gated publication.** Only bytes that passed the cross-platform
+  qualification run, including a real-editor update on Linux, macOS, and
+  Windows, can be signed and published, behind a required reviewer
+  ([#949](https://github.com/hi-godot/godot-ai/pull/949)).
+- `script/v4-release install` performs the same verify, stage, swap sequence
+  with the editor closed, for qualification and recovery.
+
+### Security and transport
+
+- **Both local hops are authenticated.** The MCP HTTP endpoint requires a
+  bearer capability and the editor WebSocket a separate 32-byte capability;
+  neither accepts a tokenless connection. Capabilities are generated per
+  server instance and published through a private, owner-only record under
+  `~/.config/godot-ai/capabilities` (Linux),
+  `~/Library/Application Support/godot-ai/capabilities` (macOS), or
+  `%LOCALAPPDATA%\godot-ai\capabilities` (Windows). `GODOT_AI_CAPABILITY_DIR`
+  overrides the location on Linux and macOS
+  ([#943](https://github.com/hi-godot/godot-ai/pull/943)).
+- Connection, body, frame, and session budgets are bounded. Duplicate JSON
+  keys, replayed nonces, and v3 protocol frames are rejected.
+- Capability paths that pass through a symbolic link are refused. On Bazzite
+  and other Fedora Atomic desktops, where `/home` links to `/var/home`, follow
+  the README workaround ([#993](https://github.com/hi-godot/godot-ai/issues/993)).
+- The `uvx` launch is isolated (`--isolated --no-config --no-env-file
+  --no-sources --no-build`) and names the public PyPI index explicitly, so an
+  ambient alternate index or uv configuration cannot change what runs.
+- **Telemetry opt-out reaches adopted servers.** Unchecking telemetry now
+  sends a one-way `telemetry_opt_out` event over the authenticated WebSocket,
+  so a server the plugin adopted rather than spawned stops sending too, and
+  `/godot-ai/status` reports what the running server will actually send
+  ([#955](https://github.com/hi-godot/godot-ai/pull/955); closes
+  [#913](https://github.com/hi-godot/godot-ai/issues/913)).
+
+### Tools
+
+- `game_manage` gains `suspend`, `resume`, `next_frame`, and `debug_status`,
+  driven through Godot's native debugger: the Embedded Game View when it is
+  available, the debugger session otherwise
+  ([#953](https://github.com/hi-godot/godot-ai/pull/953) by @quakquak86;
+  closes [#939](https://github.com/hi-godot/godot-ai/issues/939)).
+- `test_run` and `test_manage(op="results_get")` return `cache_warning` when
+  preloaded GDScript may be stale after an edit in the same editor. Restart
+  the editor before validating dependency changes
+  ([#985](https://github.com/hi-godot/godot-ai/pull/985); closes
+  [#938](https://github.com/hi-godot/godot-ai/issues/938)).
+- Numeric strings such as `"4.0"` are coerced to floats across node, camera,
+  material, animation, and audio value handlers, for clients that stringify
+  float arguments ([#969](https://github.com/hi-godot/godot-ai/pull/969) by
+  @robbe1912; closes [#964](https://github.com/hi-godot/godot-ai/issues/964)).
+- The tool surface is 46 tools: 19 named tools plus 27 `<domain>_manage`
+  rollups ([docs/TOOLS.md](docs/TOOLS.md)).
+
+### Clients
+
+- CodeBuddy IDE is configured automatically through `~/.codebuddy/mcp.json`
+  ([#983](https://github.com/hi-godot/godot-ai/pull/983); closes
+  [#941](https://github.com/hi-godot/godot-ai/issues/941)).
+
+### Reliability
+
+- Losing the authenticated editor-server session is no longer terminal. The
+  plugin re-probes with a 1, 2, 4, 8, 16 second backoff, five attempts per
+  outage, before asking for **Restart**
+  ([#982](https://github.com/hi-godot/godot-ai/pull/982); closes
+  [#962](https://github.com/hi-godot/godot-ai/issues/962)).
+- Concurrent `godot-ai attach` clients on Windows no longer fail on the
+  startup lock race ([#986](https://github.com/hi-godot/godot-ai/pull/986)).
+- Also in 4.0.0, and already shipped in 3.2.5: an already-loaded GDScript is
+  refreshed after script writes
+  ([#944](https://github.com/hi-godot/godot-ai/pull/944)); a UTF-8 BOM
+  survives a token-preserving Remove
+  ([#956](https://github.com/hi-godot/godot-ai/pull/956)); the editor
+  WebSocket keepalive deadline is wider
+  ([#961](https://github.com/hi-godot/godot-ai/pull/961)); the Windows
+  `test_project` junction repair never deletes a real plugin copy
+  ([#947](https://github.com/hi-godot/godot-ai/pull/947)); the version-check
+  refcount cycle and descendant ownership on reparent and duplicate undo are
+  fixed.
+
+### Known issues in 4.0.x
+
+- 4.0.0 and 4.0.1 cannot download an update (`download failed (302)`). Fixed
+  in 4.0.2; recovery in [#999](https://github.com/hi-godot/godot-ai/issues/999).
+- Bazzite / Fedora Atomic: the server exits before publishing capabilities
+  because `/home` is a symbolic link
+  ([#993](https://github.com/hi-godot/godot-ai/issues/993)); the README
+  documents the `GODOT_AI_CAPABILITY_DIR` workaround.
+- The dock's **Reload Plugin** button can crash the editor (fix in review,
+  [#1000](https://github.com/hi-godot/godot-ai/pull/1000)).
+- After an in-session update the dock's Update button reads **Update
+  complete** and cannot take a newer release until the editor restarts (fix in
+  review, [#1002](https://github.com/hi-godot/godot-ai/pull/1002)).
+- A failed download leaves the update lock in place; clicking Update again in
+  the same editor still works (fix in review,
+  [#1001](https://github.com/hi-godot/godot-ai/pull/1001)).
+- The limits accepted for 4.0.0 after independent review are recorded in
+  [docs/self-update.md](docs/self-update.md#known-limits-400).
+
+## Earlier releases
+
+3.x release notes are on the
+[GitHub Releases](https://github.com/hi-godot/godot-ai/releases) pages.

@@ -1,0 +1,85 @@
+name: Discord changelog
+
+## Posts a published release's notes to the Discord #changelog channel through
+## the channel-scoped DISCORD_CHANGELOG_WEBHOOK secret. The v3 line did this as
+## the last step of its release workflow. The v4 promotion (release.yml)
+## publishes from a protected environment and runs nothing that is not needed
+## to publish, so the post lives here and fires on the `published` release
+## event GitHub emits when the promotion flips the draft release live.
+##
+## Dispatch it by hand with a tag to post a release the event did not cover,
+## such as 4.0.0 to 4.0.2, which were published before this workflow existed.
+##
+## The post is silent: flags 4096 is Discord's SUPPRESS_NOTIFICATIONS, so the
+## message lands in the channel and marks it unread without pushing a
+## notification to anyone. allowed_mentions.parse:[] keeps any @mention in the
+## notes from pinging.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release tag to post, for example v4.0.2"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discord-changelog
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    ## A fork has neither the webhook nor the channel.
+    if: github.repository == 'hi-godot/godot-ai'
+    steps:
+      - name: Post release notes to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # `gh secret set` keeps a trailing newline when the value was piped
+          # with one, and curl then rejects the URL as malformed. A webhook URL
+          # has no internal whitespace, so stripping all of it is safe.
+          DISCORD_WEBHOOK=$(printf '%s' "$DISCORD_WEBHOOK" | tr -d '[:space:]')
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "::warning::DISCORD_CHANGELOG_WEBHOOK is not set; nothing posted for $TAG."
+            exit 0
+          fi
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::'$TAG' is not a release tag." >&2; exit 1 ;;
+          esac
+          name=$(gh release view "$TAG" --json name --jq '.name')
+          url=$(gh release view "$TAG" --json url --jq '.url')
+          notes=$(gh release view "$TAG" --json body --jq '.body')
+          # Discord caps an embed description at 4096 characters; leave
+          # headroom and end with a link so the full notes are one click away.
+          desc=$(printf '%s' "$notes" | head -c 3900)
+          payload=$(jq -n \
+            --arg title "$name" \
+            --arg url "$url" \
+            --arg desc "$desc" \
+            '{
+               username: "Godot AI",
+               allowed_mentions: { parse: [] },
+               flags: 4096,
+               embeds: [ {
+                 title: $title,
+                 url: $url,
+                 description: ($desc + "\n\n[View full release →](" + $url + ")"),
+                 color: 5793266
+               } ]
+             }')
+          # The release is already public; a failure here is the changelog
+          # bot's problem, and a red run is how it gets noticed.
+          curl -fsS --retry 3 --retry-delay 2 -H "Content-Type: application/json" \
+            -X POST -d "$payload" "$DISCORD_WEBHOOK"
+          echo "Posted the $TAG release notes to Discord."

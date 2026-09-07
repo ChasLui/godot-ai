@@ -168,6 +168,7 @@ supported on Windows.
 - [Write and run tests for your game](docs/testing.md)
 - [Client configuration details](docs/client-configuration.md)
 - [Upgrading from v3 and recovering interrupted migrations](docs/v4-migration.md)
+- [Changelog](CHANGELOG.md)
 - [Contributing and development setup](docs/CONTRIBUTING.md)
 - [Discord](https://discord.gg/FDZ5fr2QkP) for questions and showcases;
   [GitHub Issues](https://github.com/hi-godot/godot-ai/issues) for bug reports
