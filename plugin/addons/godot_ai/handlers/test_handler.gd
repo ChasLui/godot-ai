@@ -161,6 +161,7 @@ static func unknown_suite_error(suite_filter: String, suites: Array) -> Dictiona
 	err["error"]["data"] = {
 		"suite": suite_filter,
 		"suites_available": Array(names),
+		"cache_warning": CACHE_WARNING,
 	}
 	return err
 
@@ -245,6 +246,7 @@ func _abort_data(
 ) -> Dictionary:
 	var data := {
 		"phase": phase,
+		"cache_warning": CACHE_WARNING,
 		"elapsed_ms": elapsed_ms,
 		"budget_sec": budget_sec,
 		"passed": int(results.get("passed", 0)),

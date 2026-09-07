@@ -276,6 +276,7 @@ jobs:
         run: |
           xvfb-run -a env GODOT_BIN=godot pytest -v -s --durations=0 -k 'not local-files' --basetemp="${RUNNER_TEMP}/pytest-basetemp" \
             tests/integration/test_godot_editor_restart.py \
+            tests/integration/test_test_run_cache_warning.py \
             tests/integration/test_migration_bridge_failures.py \
             tests/integration/test_self_update_upgrade_paths.py \
             tests/integration/test_qualification_https.py \
