@@ -6366,6 +6366,14 @@ func test_launch_mentions_godot_ai_recognizes_our_launch_shapes_only() -> void:
 	assert_false(McpClient.launch_mentions_godot_ai("my-godot-ai-proxy --port 1"))
 	assert_false(McpClient.launch_mentions_godot_ai("godot-ai-helper"))
 	assert_false(McpClient.launch_mentions_godot_ai(""))
+	## Structured values: a path with spaces stays whole; a URI is never an executable.
+	assert_true(McpClient.launch_values_mention_godot_ai(
+		PackedStringArray(["C:\\Program Files\\Godot AI\\godot-ai.exe", "attach"])
+	))
+	assert_true(McpClient.launch_values_mention_godot_ai(PackedStringArray(["/opt/godot ai/bin/godot-ai"])))
+	assert_false(McpClient.launch_values_mention_godot_ai(PackedStringArray(["https://example.com/godot-ai"])))
+	assert_false(McpClient.launch_values_mention_godot_ai(PackedStringArray(["curl", "http://x/godot-ai/"])))
+	assert_false(McpClient.launch_mentions_godot_ai("node https://example.com/godot-ai"))
 
 
 func test_json_mismatch_reports_whether_the_existing_entry_is_ours() -> void:
@@ -6397,7 +6405,18 @@ func test_json_mismatch_reports_whether_the_existing_entry_is_ours() -> void:
 		client, {"name": "godot-ai", "command": "/usr/bin/python3", "args": ["srv.py"]}, "http://x", launch
 	)
 	assert_false(bool(named.get("owned", true)), "the entry name is not a launch")
-	assert_eq(McpClient.entry_launch_text({"name": "godot-ai", "command": "x", "args": ["a", 1]}), "x a 1")
+	assert_eq(
+		McpClient.entry_launch_values({"name": "godot-ai", "command": "x", "args": ["a", 1]}),
+		PackedStringArray(["x", "a", "1"]),
+	)
+	var url_entry := McpJsonStrategy._entry_status_details(
+		client, {"command": "node", "args": ["https://example.com/godot-ai"]}, "http://x", launch
+	)
+	assert_false(bool(url_entry.get("owned", true)), "a URL ending in our name is not a launch")
+	var spaced := McpJsonStrategy._entry_status_details(
+		client, {"command": "C:\\Program Files\\Godot AI\\godot-ai.exe", "args": ["attach"]}, "http://x", launch
+	)
+	assert_true(bool(spaced.get("owned", false)), "a Windows path with spaces is ours")
 	var docs_link := McpJsonStrategy._entry_status_details(
 		client,
 		{"command": "node", "args": ["server.js", "https://example.com/godot-ai/docs"]},

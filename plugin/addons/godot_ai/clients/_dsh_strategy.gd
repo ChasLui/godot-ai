@@ -183,7 +183,7 @@ static func check_status_details(
 	return {
 		"status": McpClient.Status.CONFIGURED_MISMATCH,
 		"error_msg": "",
-		"owned": McpClient.launch_mentions_godot_ai(McpClient.entry_launch_text(config)),
+		"owned": McpClient.launch_values_mention_godot_ai(McpClient.entry_launch_values(config)),
 	}
 
 
