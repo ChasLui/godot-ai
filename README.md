@@ -137,13 +137,14 @@ Opt-out creates no telemetry UUID, worker, or files.
 
 ### Bazzite / Fedora Atomic Desktop: server exits before publishing capabilities
 
-On Bazzite and other Fedora Atomic desktops, `/home` is a symbolic link to
-`/var/home`. Godot AI 4.0.2 and earlier refuse every capability-directory path
-that passes through a link, so the server exits with
-`Last pending: capability_record` ([#993](https://github.com/hi-godot/godot-ai/issues/993)).
-The next release follows a link when it is root-owned and sits in a root-owned
-directory that other accounts cannot write, which is exactly the ostree layout;
-no configuration is needed there.
+On Bazzite and other Fedora Atomic desktops, `/home` is normally a symbolic
+link to `/var/home` (the ostree layout). Godot AI 4.0.2 and earlier refuse
+every capability-directory path that passes through a link, so on such a
+system the server exits with `Last pending: capability_record`
+([#993](https://github.com/hi-godot/godot-ai/issues/993)). The next release
+follows a link when it is root-owned and sits in a root-owned directory that
+other accounts cannot write, which is exactly that layout; no configuration is
+needed there.
 
 On 4.0.2 or earlier, close Godot and your MCP client, then run this in a
 terminal as your normal user:
