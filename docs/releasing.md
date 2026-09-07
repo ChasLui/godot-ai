@@ -124,16 +124,17 @@ the embedded public key; it is not release qualification.
 ### Release notes, the changelog, and Discord
 
 `CHANGELOG.md` at the repository root is the human-facing changelog. Add the
-release's entry (version, date, what changed for users, known issues) to the
-reviewed A commit before dispatching qualification: the published release
-body links to that file at A, so an entry added afterwards is invisible from
-the release page until the next release. The body the promotion writes is
-`release_notes()` in `script/release_promotion.py`: the version-pinned
-migration guide, the pinned `CHANGELOG.md`, then GitHub's generated "What's
-Changed" list from the `previous_version` tag to A. If GitHub cannot generate
-the list, the body carries the two links alone and the operator edits the
-notes by hand; notes are mutable and are not a trust anchor, so this is never
-a reason to refuse publication.
+release's entry (version, date, what changed for users, known issues) to
+candidate A, the reviewed `main` commit, before dispatching qualification: the
+published release body links to that file at candidate A's commit, so an entry
+added afterward is invisible from the release page until the next release. The
+body the promotion writes is `release_notes()` in
+`script/release_promotion.py`: the version-pinned migration guide, the pinned
+`CHANGELOG.md`, then GitHub's generated "What's Changed" list from the
+`previous_version` tag to candidate A's commit. If GitHub cannot generate the
+list, the body carries the two links alone and the operator edits the notes by
+hand; notes are mutable and are not a trust anchor, so this is never a reason
+to refuse publication.
 
 Publishing the draft emits GitHub's `release: published` event, which runs
 `discord-changelog.yml`. That workflow posts the release name, URL, and notes

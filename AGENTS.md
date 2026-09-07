@@ -159,9 +159,9 @@ Or in cmd: `mklink /J test_project\addons\godot_ai ..\..\plugin\addons\godot_ai`
 **When troubleshooting any dev-environment / setup / dependency / symlink issue, scan `script/` first** for an existing fixer before doing it by hand. The project ships scripts for a reason — bypassing them re-introduces the bugs they were written to handle.
 
 - Server start/adopt/teardown, discovery tiers, `editor_reload_plugin`: [docs/server-lifecycle.md](docs/server-lifecycle.md)
-- Cutting a release: [docs/releasing.md](docs/releasing.md). The reviewed A
-  commit carries the release's `CHANGELOG.md` entry; the published notes link
-  to that file at A.
+- Cutting a release: [docs/releasing.md](docs/releasing.md). The release
+  candidate's source commit carries the release's `CHANGELOG.md` entry; the
+  published notes link to that file at that commit.
 - Self-update, migration capsule, or release verification changes:
   [docs/self-update.md](docs/self-update.md). **Any change touching update
   discovery, `update_manager.gd`, `release_verifier.gd`, `update_installer.gd`,
