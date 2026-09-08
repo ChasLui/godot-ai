@@ -5,7 +5,14 @@ this file at the release's exact source commit, and its "What's Changed"
 section lists every merged pull request; this file keeps the part worth
 reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
-## Unreleased
+## 4.0.3 (2026-09-08)
+
+Stabilizes the v4 line on Windows and Linux after the 3.x crossing: the
+private capability directory the account could not use, the post-update
+client barrier, servers left behind by a client's old 3.x bridge, the
+closed-editor recovery installer, the Reload Plugin crash, and the updater's
+lock. Quit and relaunch AI clients that were connected during the update.
+[Compare v4.0.2...v4.0.3](https://github.com/hi-godot/godot-ai/compare/v4.0.2...v4.0.3).
 
 ### Fixed
 
