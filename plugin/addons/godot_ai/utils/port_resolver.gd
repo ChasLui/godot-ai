@@ -9,6 +9,10 @@ extends RefCounted
 ## Canonical pid-file path. plugin.gd::SERVER_PID_FILE re-exports this so
 ## external readers and tests can use either name.
 const SERVER_PID_FILE := "user://godot_ai_server.pid"
+## Where a plugin-spawned server reports a failure that happens before it
+## publishes its capability record (`--startup-report`). Removed before every
+## spawn, so a report that exists afterwards belongs to that launch.
+const SERVER_STARTUP_REPORT := "user://godot_ai_server_startup.json"
 const WindowsPortReservation := preload("res://addons/godot_ai/utils/windows_port_reservation.gd")
 static var _process_spawn_mutex := Mutex.new()
 
@@ -428,8 +432,11 @@ static func commandline_is_godot_ai_server(commandline: String) -> bool:
 	var lower := commandline.to_lower()
 	var expression := RegEx.new()
 	var brand_search := lower
-	if expression.compile("--pid-file(?:=|\\s+)\\S+") == OK:
-		brand_search = expression.sub(lower, "--pid-file ", true)
+	## Paths we choose ourselves must not satisfy the brand: strip the pid-file
+	## and startup-report values (they live under user:// and carry our name)
+	## before searching for it.
+	if expression.compile("--(pid-file|startup-report)(?:=|\\s+)\\S+") == OK:
+		brand_search = expression.sub(lower, "--$1 ", true)
 	var branded := brand_search.contains("godot-ai") or brand_search.contains("godot_ai")
 	return branded and (lower.contains("--pid-file") or lower.contains("--transport"))
 
@@ -484,19 +491,31 @@ static func process_fingerprint(pid: int) -> String:
 ## Capture the process identity that a later destructive call must present.
 ## A PID or command-line brand alone is never kill authority: either can refer
 ## to a different process by the time a worker reaches the effect boundary.
-static func capture_process_kill_grant(pid: int, require_brand := false) -> Dictionary:
-	if pid <= 1 or pid == OS.get_process_id() or not pid_alive(pid):
+## `diagnostics`, when given, receives one word naming the check that
+## refused the grant. It costs no extra probe and never changes the result.
+static func capture_process_kill_grant(
+	pid: int, require_brand := false, diagnostics: Array = []
+) -> Dictionary:
+	if pid <= 1 or pid == OS.get_process_id():
+		diagnostics.append("invalid_pid")
+		return {}
+	if not pid_alive(pid):
+		diagnostics.append("not_alive")
 		return {}
 	if require_brand and not pid_cmdline_is_godot_ai(pid):
+		diagnostics.append("unbranded")
 		return {}
 	var fingerprint := process_fingerprint(pid)
 	if fingerprint.is_empty():
+		diagnostics.append("fingerprint_unavailable")
 		return {}
 	## Close the capture window: both identity and optional lineage/brand must
 	## still describe the same process after the fingerprint read.
 	if process_fingerprint(pid) != fingerprint:
+		diagnostics.append("fingerprint_changed")
 		return {}
 	if require_brand and not pid_cmdline_is_godot_ai(pid):
+		diagnostics.append("brand_changed")
 		return {}
 	return {"pid": pid, "fingerprint": fingerprint}
 

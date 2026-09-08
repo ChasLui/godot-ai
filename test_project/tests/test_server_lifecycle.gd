@@ -594,3 +594,64 @@ func test_replacement_target_match_is_instance_and_version_bound() -> void:
 	assert_true(Lifecycle._replacement_target_matches(target, live, record))
 	live.instance_id = "c".repeat(32)
 	assert_false(Lifecycle._replacement_target_matches(target, live, record))
+
+
+func test_unwritable_capability_directory_blocks_the_launch_with_its_repair() -> void:
+	var manager := _manager()
+	manager.start_server()
+	var episode := manager.episode_snapshot()
+	manager.complete_effect(episode.id, Lifecycle.PROBE, {"outcome": "free", "baseline_instance_id": ""})
+	episode = manager.episode_snapshot()
+	var repair := "Godot AI cannot use its private directory C:/x; run Remove-Item"
+	assert_true(manager.complete_effect(episode.id, Lifecycle.LAUNCH, {
+		"ok": false, "reason": "capability_dir_unwritable", "message": repair,
+	}))
+	var snapshot := manager.episode_snapshot()
+	assert_eq(snapshot.state, Lifecycle.BLOCKED)
+	assert_eq(snapshot.reason, "capability_dir_unwritable")
+	assert_eq(snapshot.message, repair)
+	assert_eq(manager.get_server_pid(), -1, "nothing was spawned")
+
+
+func test_server_flags_carry_the_startup_report_path() -> void:
+	var flags := Lifecycle._server_flags({
+		"http_port": 8000, "ws_port": 9500, "pid_file": "/tmp/p.pid", "startup_report": "/tmp/r.json",
+	})
+	var index := flags.find("--startup-report")
+	assert_true(index >= 0, "flag present: %s" % str(flags))
+	assert_eq(flags[index + 1], "/tmp/r.json")
+	var without := Lifecycle._server_flags({"http_port": 8000, "ws_port": 9500, "pid_file": "/tmp/p.pid"})
+	assert_false(without.has("--startup-report"))
+
+
+func test_startup_report_summary_quotes_the_server_failure() -> void:
+	var path := OS.get_user_data_dir().path_join("lifecycle_startup_report_test.json")
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(
+		'{"pid": 1, "error": "PermissionError", "message": "denied\\nsecond", "hint": "run Remove-Item"}'
+	)
+	file.close()
+	assert_eq(
+		Lifecycle.startup_report_summary(path),
+		" Server reported: PermissionError: denied second run Remove-Item"
+	)
+	assert_true(Lifecycle.startup_report_summary(path, 30).length() <= 30, "bounded")
+	file = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string("not json")
+	file.close()
+	assert_eq(Lifecycle.startup_report_summary(path), "")
+	DirAccess.remove_absolute(path)
+	assert_eq(Lifecycle.startup_report_summary(path), "")
+	assert_eq(Lifecycle.startup_report_summary(""), "")
+
+
+func test_launch_unproven_message_summarises_the_refusals() -> void:
+	var message := Lifecycle._launch_unproven_message(
+		2147480000, ["not_alive", "not_alive", "unbranded"], 15200
+	)
+	assert_true(message.contains("3 attempts over 15.2 s"), message)
+	assert_true(message.contains("pid 2147480000"), message)
+	assert_true(message.contains("now alive=no"), message)
+	assert_true(message.contains("not_alive×2, unbranded×1"), message)
+	var empty := Lifecycle._launch_unproven_message(2147480000, [], 0)
+	assert_true(empty.contains("none recorded"), empty)

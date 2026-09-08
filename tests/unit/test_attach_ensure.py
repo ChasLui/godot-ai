@@ -1183,3 +1183,72 @@ import godot_ai.orphan_reaper
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+async def test_unanswered_listener_names_an_inaccessible_capability_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#988: a bound port whose record this account cannot read is not a foreign process."""
+    monkeypatch.setattr(ensure_module, "directory_access_error", lambda: "run Remove-Item")
+
+    async def probe(_port: int, *_args) -> BackendStatus | None:
+        return None
+
+    ensurer = BackendEnsurer(
+        probe=probe,
+        spawn=lambda *_args: pytest.fail("must not spawn"),  # type: ignore[arg-type,return-value]
+        port_check=lambda _port: False,
+        runtime_dir=tmp_path,
+        health_timeout_seconds=0.01,
+        poll_seconds=0.001,
+    )
+
+    with pytest.raises(AttachStartupError) as exc_info:
+        await ensurer.ensure()
+
+    assert exc_info.value.code == "CAPABILITY_DIR_INACCESSIBLE"
+    assert exc_info.value.hint == "run Remove-Item"
+    assert exc_info.value.exit_code == 98
+
+
+async def test_unanswered_listener_with_a_usable_directory_stays_port_occupied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ensure_module, "directory_access_error", lambda: None)
+
+    async def probe(_port: int, *_args) -> BackendStatus | None:
+        return None
+
+    ensurer = BackendEnsurer(
+        probe=probe,
+        spawn=lambda *_args: pytest.fail("must not spawn"),  # type: ignore[arg-type,return-value]
+        port_check=lambda _port: False,
+        runtime_dir=tmp_path,
+        health_timeout_seconds=0.01,
+        poll_seconds=0.001,
+    )
+
+    with pytest.raises(AttachStartupError) as exc_info:
+        await ensurer.ensure()
+
+    assert exc_info.value.code == "PORT_OCCUPIED"
+
+
+def test_user_runtime_dir_windows_permission_error_carries_the_repair_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "godot-ai" / "runtime"
+    monkeypatch.setenv(ensure_module.RUNTIME_DIR_ENV, str(runtime))
+    monkeypatch.setattr(ensure_module.os, "name", "nt")
+
+    def deny(self, *_args, **_kwargs):
+        raise PermissionError(13, "denied", str(self))
+
+    monkeypatch.setattr(Path, "mkdir", deny)
+
+    with pytest.raises(AttachStartupError) as exc_info:
+        user_runtime_dir()
+
+    assert exc_info.value.code == "ATTACH_RUNTIME_DIR_ERROR"
+    assert "Remove-Item" in exc_info.value.hint
+    assert str(tmp_path / "godot-ai") in exc_info.value.hint

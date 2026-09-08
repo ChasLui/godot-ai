@@ -12,6 +12,10 @@ from tests.integration._self_update_fixture import (
     run_godot_editor,
 )
 
+## Needs a real Godot editor (GODOT_BIN); skipped without one and excluded
+## from the iteration loop by `pytest -m "not editor"`.
+pytestmark = pytest.mark.editor
+
 PLUGIN = '''@tool
 extends EditorPlugin
 

@@ -107,6 +107,9 @@ asyncio_mode = "auto"
 pythonpath = ["src"]
 # Drop each passed test's tmp_path at teardown so a long run's basetemp stays small and fast.
 tmp_path_retention_policy = "failed"
+markers = [
+    "editor: launches a real Godot editor (needs GODOT_BIN); run `pytest -m 'not editor'` to iterate",
+]
 
 [tool.ruff]
 target-version = "py311"

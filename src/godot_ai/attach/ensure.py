@@ -31,11 +31,13 @@ from godot_ai.transport.capability import (
     HTTP_CAPABILITY_ENV,
     WS_CAPABILITY_ENV,
     LaunchCapabilities,
+    directory_access_error,
     generate_capabilities,
     read_capabilities,
     validate_capability,
     validate_instance_nonce,
     validate_launch_capabilities,
+    windows_repair_hint,
 )
 
 DEFAULT_HTTP_PORT = 8000
@@ -175,13 +177,16 @@ def user_runtime_dir() -> Path:
             if stat.S_IMODE(path.lstat().st_mode) != 0o700:
                 raise OSError(errno.EACCES, "runtime directory mode is not 0700", str(path))
     except OSError as exc:
+        hint = (
+            f"Choose a private directory owned by your user with {RUNTIME_DIR_ENV}, "
+            "or correct the directory ownership and permissions."
+        )
+        if os.name == "nt" and isinstance(exc, PermissionError):
+            hint = windows_repair_hint(path)
         raise AttachStartupError(
             "ATTACH_RUNTIME_DIR_ERROR",
             f"Cannot use attach runtime directory {path}: {exc}.",
-            hint=(
-                f"Choose a private directory owned by your user with {RUNTIME_DIR_ENV}, "
-                "or correct the directory ownership and permissions."
-            ),
+            hint=hint,
             data={"path": str(path), "errno": exc.errno},
         ) from exc
     return path.resolve()
@@ -665,6 +670,12 @@ class BackendEnsurer:
             if self._port_check(self.port):
                 return None
             if time.monotonic() >= deadline:
+                ## A listener that never answers an authenticated probe is
+                ## usually a godot-ai backend whose record this account cannot
+                ## read (#988): say so rather than blaming a foreign process.
+                access_problem = directory_access_error()
+                if access_problem:
+                    raise _capability_directory_inaccessible(self.port, access_problem)
                 raise _foreign_occupant(
                     self.port, "listener did not answer the godot-ai status probe"
                 )
@@ -700,6 +711,16 @@ class BackendEnsurer:
                 },
             )
         return status
+
+
+def _capability_directory_inaccessible(port: int, repair: str) -> AttachStartupError:
+    return AttachStartupError(
+        "CAPABILITY_DIR_INACCESSIBLE",
+        f"Port {port} is bound, but this account cannot read the godot-ai capability directory.",
+        hint=repair,
+        exit_code=98,
+        data={"port": port},
+    )
 
 
 def _foreign_occupant(port: int, detail: str) -> AttachStartupError:

@@ -17,6 +17,10 @@ from tests.integration._self_update_fixture import (
     run_godot_editor,
 )
 
+## Needs a real Godot editor (GODOT_BIN); skipped without one and excluded
+## from the iteration loop by `pytest -m "not editor"`.
+pytestmark = pytest.mark.editor
+
 INSTALLER_SCRIPTS = (
     "release_verifier.gd",
     "update_installer.gd",

@@ -141,6 +141,7 @@ cd ~/godot-ai
 script/setup-dev             # creates .venv, installs deps, applies macOS .pth fix
 source .venv/bin/activate
 pytest -v                    # run tests
+pytest -m "not editor"       # iterate: skip the rows that launch a real editor
 ```
 
 `uv.lock` is intentionally untracked: dependencies resolve from `pyproject.toml`, and CI installs with pip (`pip install -e ".[dev]"`) rather than enforcing a uv lockfile.

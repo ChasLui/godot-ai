@@ -279,3 +279,38 @@ func test_find_all_pids_sees_live_listener_via_netstat_windows() -> void:
 	holder.stop()
 	assert_true(pids.has(OS.get_process_id()), "the editor's own listener should be reported")
 	assert_false(counters.has("powershell"), "netstat found the listener; PowerShell must not run")
+
+
+# ----- command-line brand ----------------------------------------------
+
+func test_brand_ignores_paths_the_plugin_chose_itself() -> void:
+	## The pid-file and startup-report values live under user:// and carry our
+	## name; a foreign command must not pass the brand because of them.
+	var unbranded := (
+		"C:/tools/python.exe -I C:/scratch/selector.py --transport streamable-http "
+		+ "--pid-file C:/u/godot_ai_server.pid --startup-report C:/u/godot_ai_server_startup.json"
+	)
+	assert_false(McpPortResolver.commandline_is_godot_ai_server(unbranded))
+	var branded := (
+		"C:/tools/python.exe -m godot_ai --transport streamable-http "
+		+ "--pid-file C:/u/godot_ai_server.pid --startup-report C:/u/godot_ai_server_startup.json"
+	)
+	assert_true(McpPortResolver.commandline_is_godot_ai_server(branded))
+	assert_true(McpPortResolver.commandline_is_godot_ai_server(
+		"/opt/venv/bin/godot-ai --transport streamable-http --startup-report=/tmp/r.json"
+	))
+	assert_false(McpPortResolver.commandline_is_godot_ai_server("python -m something --transport x"))
+
+
+func test_kill_grant_capture_names_the_check_that_refused() -> void:
+	var diagnostics: Array = []
+	assert_true(McpPortResolver.capture_process_kill_grant(0, true, diagnostics).is_empty())
+	assert_eq(diagnostics, ["invalid_pid"])
+	diagnostics.clear()
+	## The editor's own pid is refused before any probe runs.
+	assert_true(McpPortResolver.capture_process_kill_grant(OS.get_process_id(), true, diagnostics).is_empty())
+	assert_eq(diagnostics, ["invalid_pid"])
+	diagnostics.clear()
+	## An implausible pid is not alive.
+	assert_true(McpPortResolver.capture_process_kill_grant(2147480000, true, diagnostics).is_empty())
+	assert_eq(diagnostics, ["not_alive"])
