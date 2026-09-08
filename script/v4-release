@@ -487,6 +487,10 @@ def _process_is_live(pid: int) -> bool:
     lock holder as dead when psutil was absent, so a live editor's lock was
     replaced instead of refused.
     """
+    if pid <= 0:
+        # os.kill(0, 0) signals the caller's own process group and "succeeds";
+        # no lock is ever held by pid 0.
+        return False
     if os.name == "nt":
         return _windows_process_is_live(pid)
     try:
