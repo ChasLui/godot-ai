@@ -393,3 +393,38 @@ func test_capability_pair_is_distinct_for_dev_and_managed_spawns() -> void:
 	assert_eq(str(pair.http).length(), 64)
 	assert_eq(str(pair.websocket).length(), 64)
 	assert_ne(pair.http, pair.websocket)
+
+
+class _DeferralRecordingPlugin extends Plugin:
+	var finished := 0
+
+	func _finish_post_update() -> void:
+		finished += 1
+
+
+func test_deferred_clients_do_not_block_startup_and_are_named_for_configure() -> void:
+	var plugin := _DeferralRecordingPlugin.new()
+	plugin._post_update_outcome = {
+		"outcome": "success",
+		"from_version": "3.2.4",
+		"to_version": VERSION,
+	}
+	plugin._on_post_update_repin_completed({
+		"ok": true,
+		"configured_ids": ["codex"],
+		"repinned_ids": ["codex"],
+		"foreign_ids": [],
+		"deferred": [
+			{"id": "pi", "reason": "its godot-ai entry differs from what Configure wrote before the update"},
+		],
+	})
+	assert_eq(plugin.finished, 1, "a deferred client must not turn success into a barrier failure")
+	assert_eq(plugin._post_update_deferred.size(), 1)
+	var label := plugin._post_update_complete_label()
+	assert_true(label.begins_with("Quit and relaunch AI clients"), label)
+	assert_true(label.contains("Pi Agent"), label)
+	assert_true(label.contains("Configure"), label)
+	plugin._post_update_deferred = []
+	assert_false(plugin._post_update_complete_label().contains("Not migrated"))
+	plugin._lifecycle = null
+	plugin.free()

@@ -472,3 +472,16 @@ def test_dock_emits_endpoint_setting_values_and_root_owns_persistence() -> None:
     )
     assert "ClientConfigurator.apply_endpoint_settings(changes.duplicate(true))" in routed
     assert "func apply_endpoint_settings(changes: Dictionary) -> Dictionary:" in configurator_source
+
+
+def test_post_update_drift_is_deferred_to_configure_not_a_startup_barrier() -> None:
+    """#999: an entry that is not provably ours is left alone and named, never a block."""
+    owner_source = (PLUGIN_ROOT / "utils" / "client_job_owner.gd").read_text(encoding="utf-8")
+    post_update = get_func_block(owner_source, "func _run_post_update_repin(")
+    result = get_func_block(owner_source, "func _post_update_result(")
+
+    assert "automatic migration refused" not in post_update
+    assert post_update.count("deferred.append(") == 2
+    assert "entry_drift_is_version_pin_only(" in post_update
+    assert "ClientConfigurator.configure(" in post_update, "#890 write restriction stays"
+    assert '"deferred": deferred.duplicate(true)' in result
