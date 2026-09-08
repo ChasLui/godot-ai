@@ -9,6 +9,11 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
 ### Fixed
 
+- `editor_reload_plugin` (and the dock's Reload) gave up after 5 s when the
+  editor was still scanning or importing, left the plugin unchanged with only
+  an editor-log error, and the calling AI client then waited out the server's
+  90 s reconnect budget for a replacement session that never came. The
+  reload now waits up to 60 s for its filesystem scan.
 - **OpenCode:** Configure wrote only `opencode.json` while OpenCode merges
   it with `opencode.jsonc`, the latter winning per key, so a stale
   `godot-ai` entry in an existing `opencode.jsonc` kept overriding the new

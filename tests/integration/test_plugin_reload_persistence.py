@@ -178,6 +178,7 @@ func _exercise() -> void:
     else:
         if mode == "native-timeout":
             Engine.time_scale = 0.0
+            Reload._scan_timeout_seconds = 5.0
             Reload._start_scan(filesystem, null, work)
         else:
             Reload._start_scan(filesystem, timer, work)
@@ -216,7 +217,7 @@ func _exercise() -> void:
             assert(ProjectSettings.save() == OK)
             filesystem.filesystem_changed.emit()
         elif mode == "native-timeout":
-            pass # Real five-second timer must settle this uncompleted scan.
+            pass # The real (shortened) timer must settle this uncompleted scan.
         elif mode == "notification":
             filesystem.filesystem_changed.emit()
             assert(int(Engine.get_meta("reload_enters")) == 1,
@@ -229,6 +230,7 @@ func _exercise() -> void:
     assert(Work.quiescence().ok, "reload work must settle")
     if mode == "native-timeout":
         Engine.time_scale = 1.0
+        Reload._scan_timeout_seconds = Reload.SCAN_TIMEOUT_SECONDS
         assert(Time.get_ticks_msec() - started >= 4500)
         assert(Time.get_ticks_msec() - started < 8000)
     assert(Reload._pending_scan.is_empty())
