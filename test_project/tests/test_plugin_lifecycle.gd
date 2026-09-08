@@ -416,13 +416,19 @@ func test_deferred_clients_do_not_block_startup_and_are_named_for_configure() ->
 		"foreign_ids": [],
 		"deferred": [
 			{"id": "pi", "reason": "its godot-ai entry differs from what Configure wrote before the update"},
+			{"id": "cursor", "reason": "its configuration could not be read: unexpected token"},
 		],
 	})
 	assert_eq(plugin.finished, 1, "a deferred client must not turn success into a barrier failure")
-	assert_eq(plugin._post_update_deferred.size(), 1)
+	assert_eq(plugin._post_update_deferred.size(), 2)
 	var label := plugin._post_update_complete_label()
 	assert_true(label.begins_with("Quit and relaunch AI clients"), label)
-	assert_true(label.contains("Pi Agent"), label)
+	## Each client carries its own reason: an unreadable file is not drift.
+	assert_true(
+		label.contains("Pi Agent (its godot-ai entry differs from what Configure wrote before the update)"),
+		label
+	)
+	assert_true(label.contains("Cursor (its configuration could not be read: unexpected token)"), label)
 	assert_true(label.contains("Configure"), label)
 	plugin._post_update_deferred = []
 	assert_false(plugin._post_update_complete_label().contains("Not migrated"))

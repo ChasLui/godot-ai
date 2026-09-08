@@ -127,7 +127,9 @@ var _post_update_outcome: Dictionary = {}
 var _post_update_replaced_version := ""
 ## Clients the post-update migration left unchanged (`{id, reason}`), named
 ## in the dock's completion banner so the user knows to click Configure.
-var _post_update_deferred: Array[Dictionary] = []
+## Untyped on purpose: a typed collection field is the hot-reload crash
+## class (#245) the self-update smoke injects to prove the swap survives it.
+var _post_update_deferred := []
 var _last_logged_block := ""
 ## Bounded re-probes while that backend is still binding its port: a port
 ## that is bound but not yet answering status reads as merely occupied.
@@ -910,15 +912,13 @@ func _post_update_complete_label() -> String:
 	)
 	if _post_update_deferred.is_empty():
 		return text
-	var names: Array[String] = []
+	var named: Array[String] = []
 	for entry in _post_update_deferred:
-		var client := McpClientRegistry.get_by_id(str(entry.get("id", "")))
-		names.append(client.display_name if client != null else str(entry.get("id", "")))
-	return (
-		text
-		+ " Not migrated because their godot-ai entry differs from what Configure wrote: %s. Use Configure to replace them."
-		% ", ".join(names)
-	)
+		var client_id := str(entry.get("id", ""))
+		var client := McpClientRegistry.get_by_id(client_id)
+		var name: String = client.display_name if client != null else client_id
+		named.append("%s (%s)" % [name, str(entry.get("reason", "not migrated"))])
+	return text + " Not migrated: %s. Use Configure to replace them." % ", ".join(named)
 
 
 ## Sole release point for ordinary work and the server lifecycle. Keeping

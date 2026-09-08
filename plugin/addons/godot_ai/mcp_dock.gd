@@ -2805,6 +2805,12 @@ func present_update_state(state: Dictionary) -> void:
 		_post_update_server_pending = true
 		if _status_label != null:
 			_update_status()
+	elif state.has("install_in_flight"):
+		## The install ended without a swap (`_fail_update`): the previous
+		## version is live and the transport status is the truth again.
+		_post_update_server_pending = false
+		if _status_label != null:
+			_update_status()
 	if state.has("button_text") and _update_btn != null:
 		_update_btn.text = String(state["button_text"])
 	if state.has("button_disabled") and _update_btn != null:

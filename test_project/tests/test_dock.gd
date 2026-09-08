@@ -553,6 +553,31 @@ func test_post_update_window_reads_as_finishing_not_blocked() -> void:
 	_dock._post_update_server_pending = false
 
 
+func test_failed_update_ends_the_finishing_window() -> void:
+	_dock._build_ui()
+	_dock.present_lifecycle_snapshot({"state": McpServerState.UNINITIALIZED})
+	_dock.present_transport_snapshot({"connected": false, "status": {"phase": "blocked"}})
+	_dock.present_update_state({
+		"install_in_flight": true,
+		"status_text": "Verifying…",
+		"banner_visible": true,
+		"post_update_action": "",
+	})
+	_dock._update_status()
+	assert_eq(_dock._status_label.text, "Finishing update — starting server…")
+	## `_fail_update`: no swap happened, the previous version is live, and
+	## nothing is starting, so the transport status is the truth again.
+	_dock.present_update_state({
+		"install_in_flight": false,
+		"status_text": "Update failed — previous version restored",
+		"button_disabled": false,
+	})
+	assert_false(_dock._post_update_server_pending)
+	assert_eq(_dock._status_label.text, "Connection blocked")
+	_dock._update_status()
+	assert_eq(_dock._status_label.text, "Connection blocked")
+
+
 func test_configure_all_dispatches_while_incompatible() -> void:
 	## The write path must run while INCOMPATIBLE — Configure writes an
 	## explicit url + live plugin version and does not need a healthy occupant.
