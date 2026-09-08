@@ -481,25 +481,31 @@ def test_publishing_into_an_unwritable_directory_raises_the_repair_hint(
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DACL inheritance")
 def test_windows_capability_directory_inherits_the_parent_acl(tmp_path) -> None:
-    """The regression behind #988: no OWNER RIGHTS-only DACL, inherited ACEs only."""
+    """The regression behind #988: the capability directory gets what a plain
+    mkdir gets in this parent, never the explicit ``mode=0o700`` DACL."""
     directory = tmp_path / "godot-ai" / "capabilities"
     write_capabilities(8122, HTTP, WEBSOCKET, instance_nonce=NONCE, directory=directory)
-    ## The DACL a plain mkdir yields in this parent is the environment's
-    ## baseline (a CI temp root may carry explicit, non-inheritable ACEs). The
-    ## capability directory must match it exactly: the 0o700 signature is a
-    ## different, explicit SYSTEM/Administrators/OWNER RIGHTS-only DACL.
-    control = tmp_path / "control"
+    ## Two siblings define the environment: what a plain mkdir yields here is
+    ## the baseline, and what ``mode=0o700`` yields is the #988 signature. A
+    ## CI temp root can hand a plain child explicit, non-inherited ACEs of its
+    ## own (pytest creates its temp tree with 0o700, and the release
+    ## qualification row's C: profile temp shows OWNER RIGHTS on plain
+    ## children), so the assertions compare against these siblings rather
+    ## than against an absolute picture of inherited entries.
+    control = directory.parent / "control"
     control.mkdir()
+    restricted = directory.parent / "restricted"
+    restricted.mkdir(mode=0o700)
 
     def aces(path: Path) -> list[str]:
         listing = subprocess.run(
             ["icacls", str(path)], capture_output=True, text=True, check=True
         ).stdout
         return sorted(
-            line.replace(str(path), "").strip()
-            for line in listing.splitlines()
-            if ":(" in line
+            line.replace(str(path), "").strip() for line in listing.splitlines() if ":(" in line
         )
 
+    if aces(restricted) == aces(control):
+        pytest.skip("this interpreter or volume gives mode=0o700 the plain-mkdir DACL")
     assert aces(directory) == aces(control)
-    assert not any("OWNER RIGHTS" in ace and "(I)" not in ace for ace in aces(directory))
+    assert aces(directory) != aces(restricted)
