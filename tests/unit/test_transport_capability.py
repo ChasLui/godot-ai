@@ -471,10 +471,12 @@ def test_publishing_into_an_unwritable_directory_raises_the_repair_hint(
     monkeypatch.setattr(
         capability_module, "_windows_access_probe", lambda _d: PermissionError(13, "denied")
     )
+    directory = tmp_path / "godot-ai" / "capabilities"
     with pytest.raises(OSError) as exc_info:
-        write_capabilities(8122, HTTP, WEBSOCKET, instance_nonce=NONCE, directory=tmp_path)
+        write_capabilities(8122, HTTP, WEBSOCKET, instance_nonce=NONCE, directory=directory)
     assert exc_info.value.errno == errno.EACCES
     assert "Remove-Item" in str(exc_info.value)
+    assert str(tmp_path / "godot-ai") in str(exc_info.value)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DACL inheritance")
