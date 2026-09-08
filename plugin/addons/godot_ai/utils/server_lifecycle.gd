@@ -1362,10 +1362,16 @@ static func pre_v4_version_from_status(parsed: Variant) -> String:
 	var version := str(parsed.get("server_version", "")).strip_edges()
 	if version.length() > 32 or not version.begins_with("3."):
 		return ""
-	for index in range(version.length()):
-		var code := version.unicode_at(index)
-		if not ((code >= 48 and code <= 57) or code == 46):
+	## Every dot-separated component must be digits and non-empty: "3.",
+	## "3..2" and "3.2." are not versions and must not earn the stale-server
+	## wording or the slow post-update retry.
+	for part in version.split("."):
+		if part.is_empty():
 			return ""
+		for index in range(part.length()):
+			var code := part.unicode_at(index)
+			if code < 48 or code > 57:
+				return ""
 	return version
 
 

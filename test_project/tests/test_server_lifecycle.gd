@@ -660,6 +660,13 @@ func test_pre_v4_version_is_read_only_from_a_godot_ai_3x_claim() -> void:
 	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "godot-ai", "server_version": "4.0.2"}), "")
 	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "other", "server_version": "3.2.4"}), "")
 	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "godot-ai", "server_version": "3.2.4 <b>x</b>"}), "")
+	for malformed in ["3.", "3..2", "3.2.", "3.2.4.", "3.-1", "3"]:
+		assert_eq(
+			Lifecycle.pre_v4_version_from_status({"name": "godot-ai", "server_version": malformed}),
+			"",
+			"malformed version must not be trusted: %s" % malformed
+		)
+	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "godot-ai", "server_version": "3.10.12"}), "3.10.12")
 	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "godot-ai"}), "")
 	assert_eq(Lifecycle.pre_v4_version_from_status("not a dictionary"), "")
 	assert_eq(Lifecycle.pre_v4_version_from_status(null), "")

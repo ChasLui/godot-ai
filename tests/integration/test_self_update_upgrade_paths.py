@@ -519,7 +519,10 @@ def test_signed_update_restarts_into_matching_live_server(
     print(f"server A: {'stopped' if 'MCP | stopped server' in initial_log else 'detached (lease)'}")
     print(f"replacement: {'needed' if replaced_line in restarted_log else 'not needed'}")
     print(f"blocks before the start: {blocks_before_start}")
-    assert f"MCP | AI clients attached before the update must restart to use v{next_version}" in log
+    assert (
+        "MCP | AI clients attached before the update must be quit and relaunched "
+        f"to use v{next_version}" in log
+    )
 
     initial_editor, restarted_editor = read_editor_receipts(project)
     assert initial_editor["pid"] != restarted_editor["pid"], (initial_editor, restarted_editor)
