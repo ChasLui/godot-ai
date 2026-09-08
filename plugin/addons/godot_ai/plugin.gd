@@ -125,6 +125,11 @@ var _post_update_outcome: Dictionary = {}
 ## update may spawn a backend of that version into the restart window; the
 ## restarted editor replaces it once instead of asking the user to.
 var _post_update_replaced_version := ""
+## Clients the post-update migration left unchanged (`{id, reason}`), named
+## in the dock's completion banner so the user knows to click Configure.
+## Untyped on purpose: a typed collection field is the hot-reload crash
+## class (#245) the self-update smoke injects to prove the swap survives it.
+var _post_update_deferred := []
 var _last_logged_block := ""
 ## Bounded re-probes while that backend is still binding its port: a port
 ## that is bound but not yet answering status reads as merely occupied.
@@ -811,6 +816,14 @@ func _on_post_update_repin_completed(result: Dictionary) -> void:
 			"MCP | the %s entry named godot-ai launches something else; it was left unchanged. Use Configure in the dock to replace it."
 			% str(client_id)
 		)
+	_post_update_deferred = []
+	for entry in result.get("deferred", []):
+		if entry is Dictionary:
+			_post_update_deferred.append((entry as Dictionary).duplicate(true))
+			push_warning(
+				"MCP | %s was not migrated automatically because %s; it was left unchanged. Use Configure in the dock."
+				% [str(entry.get("id", "")), str(entry.get("reason", ""))]
+			)
 	## A click cannot prove that an external client restarted. The enforceable
 	## boundary is the one we own: repin its configuration, mark the update
 	## complete, then start and authenticate that server. Clients reconnect to
@@ -885,14 +898,27 @@ func _present_post_update_complete() -> void:
 			"install_in_flight": false,
 			"status_text": "Update complete",
 			"button_disabled": true,
-			"label_text": (
-				"Restart AI clients that were connected during the update so they use v%s."
-				% str(_post_update_outcome.get("to_version", ""))
-			),
+			"label_text": _post_update_complete_label(),
 			"banner_visible": true,
 			"post_update_action": "",
 			"outcome": "success",
 		})
+
+
+func _post_update_complete_label() -> String:
+	var text := (
+		"Quit and relaunch AI clients that were connected during the update so they use v%s."
+		% str(_post_update_outcome.get("to_version", ""))
+	)
+	if _post_update_deferred.is_empty():
+		return text
+	var named: Array[String] = []
+	for entry in _post_update_deferred:
+		var client_id := str(entry.get("id", ""))
+		var client := McpClientRegistry.get_by_id(client_id)
+		var name: String = client.display_name if client != null else client_id
+		named.append("%s (%s)" % [name, str(entry.get("reason", "not migrated"))])
+	return text + " Not migrated: %s. Use Configure to replace them." % ", ".join(named)
 
 
 ## Sole release point for ordinary work and the server lifecycle. Keeping

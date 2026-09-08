@@ -89,8 +89,13 @@ All steps run inside the editor, on the main thread except the download.
      stale-server recovery arm and the pin-only auto-repin gate already read),
      repin owned client configuration once and record `clients_migrated` in
      the marker, emit the `self_update` telemetry event, and continue normal
-     startup. A success marker that records its migration is the durable
-     record of the last update and is nothing pending on later starts;
+     startup. An entry the migration cannot prove as what Configure wrote
+     before the update (a hand-edited or v3-shaped entry, an unreadable
+     file) is never rewritten (#890) and never blocks the server either: it
+     is left unchanged, named in the completion banner, and left to the
+     dock's Configure (#999). A success marker that records its migration is
+     the durable record of the last update and is nothing pending on later
+     starts;
    - different: rename the live tree to `.godot_ai_update/quarantine/`, rename
      the backup back into place, mark `status: rolled_back` with the reason,
      and show it in the dock. If the backup is missing too, mark

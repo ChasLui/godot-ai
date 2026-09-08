@@ -255,6 +255,11 @@ var _update_btn: Button
 const _UPDATE_ACTION_TEXT := "Update"
 const _UPDATE_LABEL_COLOR := Color(1.0, 0.85, 0.3)
 var _post_update_action := ""
+## True from the moment an update starts its client migration until the
+## server it then starts is connected. The transport reads "blocked" for
+## that whole window (the migration barrier, then the launch), which is
+## not a fault: name the phase instead of alarming the user (#999).
+var _post_update_server_pending := false
 
 func _ready() -> void:
 	_startup_grace_until_msec = Time.get_ticks_msec() + STARTUP_GRACE_MSEC
@@ -792,6 +797,8 @@ func _update_status() -> void:
 	var state: int = int(server_status.get("state", ServerStateScript.UNINITIALIZED))
 	if ServerStateScript.blocks_client_health(state):
 		connected = false
+	if connected:
+		_post_update_server_pending = false
 
 	## One `match`/`elif` chain, one source of truth. Adding a new
 	## spawn outcome = one `ServerStateScript` constant + one arm here +
@@ -829,6 +836,11 @@ func _update_status() -> void:
 	elif state == ServerStateScript.NO_COMMAND:
 		status_text = "No server command found"
 		status_color = Color.RED
+	elif _post_update_server_pending:
+		## Every terminal spawn failure matched above; what is left is the
+		## post-update window where the server is being brought back.
+		status_text = "Finishing update — starting server…"
+		status_color = COLOR_AMBER
 	elif not transport_status.is_empty():
 		var transport_phase := str(transport_status.get("phase", ""))
 		if transport_phase == "connecting":
@@ -2786,6 +2798,19 @@ func present_update_state(state: Dictionary) -> void:
 			_update_btn.text = _UPDATE_ACTION_TEXT
 	if state.has("install_in_flight"):
 		_update_install_in_flight = bool(state["install_in_flight"])
+	if String(state.get("post_update_action", "")) == "retry":
+		## The migration barrier refused: the connection really is blocked.
+		_post_update_server_pending = false
+	elif bool(state.get("install_in_flight", false)) or String(state.get("outcome", "")) == "success":
+		_post_update_server_pending = true
+		if _status_label != null:
+			_update_status()
+	elif state.has("install_in_flight"):
+		## The install ended without a swap (`_fail_update`): the previous
+		## version is live and the transport status is the truth again.
+		_post_update_server_pending = false
+		if _status_label != null:
+			_update_status()
 	if state.has("button_text") and _update_btn != null:
 		_update_btn.text = String(state["button_text"])
 	if state.has("button_disabled") and _update_btn != null:

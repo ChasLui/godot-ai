@@ -9,6 +9,17 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
 ### Fixed
 
+- After an update, a client entry the migration could not prove as
+  "what Configure wrote before the update" (a project `.mcp.json` with a
+  v3 `type: http` entry, an unreadable file) blocked the server with
+  `<client> has non-version configuration drift; automatic migration
+  refused` and a Retry that failed the same way. The entry is still never
+  rewritten (#890), but it no longer holds the server: it is left
+  unchanged, named in the completion banner with a Configure hint, and
+  startup continues. While an update brings the server back the dock now
+  reads `Finishing update — starting server…` instead of a red
+  `Connection blocked`
+  startup continues
 - **Closed-editor recovery installer** (`script/v4-release install`, the
   #999 procedure): on Windows it treated every update-lock holder as dead
   when `psutil` was not installed, which the published command never
