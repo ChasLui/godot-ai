@@ -109,42 +109,31 @@ func _camera_current_settled(cam: Node, expected: bool) -> bool:
 	return not bool(cam.is_current()) and not viewport_matches
 
 
-func _wait_for_camera_current(cam: Node, expected: bool) -> bool:
-	for _i in range(20):
-		if _camera_current_settled(cam, expected):
-			return true
-		OS.delay_msec(10)
-	return _camera_current_settled(cam, expected)
-
-
+## Read the camera's current state once and package it with the diagnostic.
+##
+## This used to spin 20 x `OS.delay_msec(10)` "waiting for the engine to
+## settle". It cannot settle anything: a test body runs synchronously on the
+## main thread, so no frame advances during the sleep, and there is nothing
+## frame-driven to wait for anyway — `Camera2D.is_current()` is a synchronous
+## `viewport.get_camera_2d() == self` read and `make_current()` writes that
+## slot before it returns (Godot 4.7.2 `camera_2d.cpp`). The first read is
+## definitive. The `attempts` / `elapsed_msec` keys are kept for the
+## diagnostic callers; both are trivially 1 / ~0 now.
 func _wait_for_camera_current_report(cam: Node, expected: bool) -> Dictionary:
 	var start := Time.get_ticks_msec()
-	var attempts := 0
-	for i in range(20):
-		attempts = i + 1
-		if _camera_current_settled(cam, expected):
-			return {
-				"settled": true,
-				"attempts": attempts,
-				"elapsed_msec": Time.get_ticks_msec() - start,
-				"message": _camera_current_wait_timeout_message(cam, expected, attempts, Time.get_ticks_msec() - start),
-			}
-		OS.delay_msec(10)
 	var settled := _camera_current_settled(cam, expected)
 	var elapsed := Time.get_ticks_msec() - start
 	return {
 		"settled": settled,
-		"attempts": attempts,
+		"attempts": 1,
 		"elapsed_msec": elapsed,
-		"message": _camera_current_wait_timeout_message(cam, expected, attempts, elapsed),
+		"message": _camera_current_mismatch_message(cam, expected, 1, elapsed),
 	}
 
 
-func _camera_current_wait_timeout_message(cam: Node, expected: bool, attempts: int, elapsed_msec: int) -> String:
-	return "Timed out waiting for camera current=%s after %d attempts/%dms. %s" % [
+func _camera_current_mismatch_message(cam: Node, expected: bool, attempts: int, elapsed_msec: int) -> String:
+	return "Camera current=%s not observed after make_current/clear_current (state is synchronous; a retry cannot change it). %s" % [
 		expected,
-		attempts,
-		elapsed_msec,
 		_camera_current_diag(cam, expected, attempts, elapsed_msec),
 	]
 
@@ -239,18 +228,17 @@ func _camera_current_diag(cam: Node, expected: bool, attempts: int, elapsed_msec
 	]
 
 
-# Issue #316 gate. After 12+ fix attempts, `Camera2D.make_current()` →
-# `Viewport.camera_2d` (and the same dispatch for Camera3D →
-# `Viewport.camera_3d`, exercised by `test_make_current_does_not_cross_classes`)
-# still occasionally lags in headless mode (originally observed on macOS,
-# then on Windows after PR #380's diagnostic landed — same handler-agrees /
-# engine-disagrees signature, same `viewport_camera=<none>` end state). The
-# handler-side logical bookkeeping (#311) stays correct in that race — only
-# the engine-side viewport slot doesn't catch up. Per the issue's acceptance
-# criterion #2, the headless failure is gated when the handler view agrees
-# with the expectation: skip with the full diagnostic so the next
-# investigator still sees the state divergence, but don't fail the build for
-# a known upstream race we can't close at the plugin level.
+# Issue #316 gate. The "engine-state lag" it guards against — handler agrees,
+# `is_current()` false, `viewport_camera=<none>` — was never lag. It is
+# Godot's `SceneTree` group-call skip set: `Camera2D.make_current()` fans out
+# through `call_group`, which skips any node whose pointer matches a node
+# removed from the tree earlier in the same `_process()` pass, so a camera
+# allocated into a just-freed node's address is silently never made current.
+# The handler now repairs that in place
+# (`CameraHandler._broadcast_make_current_2d`) and
+# `test_make_current_survives_same_frame_freed_node_alias` reproduces it on
+# purpose. The gate stays as a belt-and-braces skip for headless CI only; if it
+# ever fires again the diagnostic still carries the full state divergence.
 #
 # Deliberately scoped to headless DisplayServer only — Linux CI runs under
 # xvfb with a real display server, and a developer running the suite in a
@@ -397,6 +385,49 @@ func test_make_current_does_not_cross_classes() -> void:
 	assert_true(cam3_current.settled, cam3_current.message)
 	assert_eq(n2.is_current(), true, "Camera2D current should not be touched when Camera3D becomes current. %s" % _camera_current_diag(n2, true, cam2_current.attempts, cam2_current.elapsed_msec))
 	assert_eq(n3.is_current(), true, "Direct is_current mismatch after wait succeeded. %s" % _camera_current_diag(n3, true, cam3_current.attempts, cam3_current.elapsed_msec))
+
+
+# Regression for the load-sensitive `test_make_current_does_not_cross_classes`
+# failure (handler_current=true, node_is_current=false, viewport_camera=<none>).
+# `Camera2D.make_current()` dispatches through `SceneTree.call_group`, which
+# skips every node whose pointer is in the tree's removed-this-frame set. Free
+# a camera in the same frame and the next `Camera2D.new()` usually lands on
+# its address (49/50 on Windows 4.7.2), so without the handler's direct
+# `_make_current` broadcast the freshly created camera is never made current.
+# Five rounds make the aliasing practically certain on every allocator.
+func test_make_current_survives_same_frame_freed_node_alias() -> void:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		assert_true(false, "No scene open")
+		return
+	var viewport := scene_root.get_viewport()
+	for round in range(5):
+		var victim := Camera2D.new()
+		victim.name = "_McpTestAliasVictim%d" % round
+		scene_root.add_child(victim)
+		scene_root.remove_child(victim)
+		victim.free()
+		var created := _create("AliasCam%d" % round, "2d", true)
+		assert_has_key(created, "data")
+		if not created.has("data"):
+			return
+		var cam := McpScenePath.resolve(created.data.path, scene_root) as Camera2D
+		assert_true(cam != null, "AliasCam%d should resolve" % round)
+		if cam == null:
+			return
+		assert_true(
+			cam.is_current() and viewport.get_camera_2d() == cam,
+			"Round %d: camera created after a same-frame free must be current. %s" % [
+				round, _camera_current_diag(cam, true, 1, 0),
+			]
+		)
+		# Retire this round's camera the same way the test cleanup does
+		# (queue_free keeps its address occupied until the frame ends, so the
+		# next round's victim/new-camera pair is the only aliasing in play).
+		_clear_camera_current_for_removal(cam)
+		scene_root.remove_child(cam)
+		cam.queue_free()
+		_created_paths.erase(created.data.path)
 
 
 # ============================================================================
