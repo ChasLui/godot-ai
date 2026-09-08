@@ -646,3 +646,29 @@ def test_verify_signature_falls_back_to_openssl_without_cryptography(release, tr
     verify._verify_signature(release.raw, release.signature.read_bytes(), trusted.public)
     with pytest.raises(verify.ReleaseError, match="verification failed"):
         verify._verify_signature(release.raw + b"x", release.signature.read_bytes(), trusted.public)
+
+
+def test_release_verify_loads_without_the_godot_ai_package(tmp_path):
+    """``script/v4-release`` loads this file standalone on a runner that has
+    only the interpreter; ``-I -S`` hides the editable install the same way."""
+    module_path = str(Path(verify.__file__).resolve())
+    target = str(tmp_path / "standalone")
+    probe = "\n".join(
+        [
+            "import importlib.util, sys",
+            "from pathlib import Path",
+            f"spec = importlib.util.spec_from_file_location('standalone_verify', {module_path!r})",
+            "module = importlib.util.module_from_spec(spec)",
+            "spec.loader.exec_module(module)",
+            "loaded = sorted(name for name in sys.modules if name.startswith('godot_ai'))",
+            "assert not loaded, loaded",
+            f"module.private_mkdir(Path({target!r}))",
+            "print('standalone-ok')",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", probe], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "standalone-ok"
+    assert (tmp_path / "standalone").is_dir()
