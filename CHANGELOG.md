@@ -9,6 +9,16 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
 ### Fixed
 
+- A Godot AI 3.x server left on the port by an AI client whose bridge
+  attached before the update was reported as "held by another process". The
+  lifecycle now performs one untrusted, tokenless status read solely to word
+  the block: it names the pre-v4 server, tells the user to quit and relaunch
+  that client, and re-probes slowly for about three and a half minutes so
+  the editor comes up green once the old server's lease and idle backstop
+  run out. The read grants no adoption, replacement or kill authority. The
+  dock and the migration guide now say "quit and relaunch" rather than
+  "restart": Claude Desktop keeps its MCP configuration in memory and
+  respawns the old bridge until the application itself is relaunched.
 - After an update, a client entry the migration could not prove as
   "what Configure wrote before the update" (a project `.mcp.json` with a
   v3 `type: http` entry, an unreadable file) blocked the server with

@@ -135,6 +135,15 @@ var _last_logged_block := ""
 ## that is bound but not yet answering status reads as merely occupied.
 const POST_UPDATE_REPROBE_LIMIT := 10
 var _post_update_reprobes_left := POST_UPDATE_REPROBE_LIMIT
+## A pre-v4 server left on the port by a still-running v3 attach bridge
+## outlives the fast budget above: its lease lasts 30 s after that client
+## quits and its idle backstop another 120 s. Poll slowly across that
+## window so the editor comes up green once the user has relaunched the
+## client, without any replacement authority over a server we cannot
+## authenticate.
+const POST_UPDATE_STALE_REPROBE_SECONDS := 10.0
+const POST_UPDATE_STALE_REPROBE_LIMIT := 21
+var _post_update_stale_reprobes_left := POST_UPDATE_STALE_REPROBE_LIMIT
 ## An old bridge spawns again as soon as the port frees, so one replacement
 ## may not be the last; a few are allowed before the dock takes over.
 const POST_UPDATE_REPLACEMENT_LIMIT := 3
@@ -866,9 +875,10 @@ func _finish_post_update() -> void:
 	UpdateInstaller.prune_backups(str(_post_update_outcome.get("from_version", "")))
 	_post_update_replaced_version = str(_post_update_outcome.get("from_version", ""))
 	_post_update_reprobes_left = POST_UPDATE_REPROBE_LIMIT
+	_post_update_stale_reprobes_left = POST_UPDATE_STALE_REPROBE_LIMIT
 	_post_update_replacements_left = POST_UPDATE_REPLACEMENT_LIMIT
 	print(
-		"MCP | AI clients attached before the update must restart to use v%s"
+		"MCP | AI clients attached before the update must be quit and relaunched to use v%s"
 		% str(_post_update_outcome.get("to_version", ""))
 	)
 	_present_post_update_complete()
@@ -1304,7 +1314,22 @@ func _replace_server_left_by_update(snapshot: Dictionary) -> void:
 		## bounded number of times; the re-probe finds that backend answering
 		## and takes the replacement path. Then the dock's Restart Server is
 		## the remaining path.
-		if str(snapshot.get("episode_state", "")) == "BLOCKED" and _post_update_reprobes_left > 0:
+		if str(snapshot.get("episode_state", "")) != "BLOCKED":
+			return
+		if str(snapshot.get("blocked_hint", "")) == ServerLifecycleManager.STALE_PRE_V4_HINT:
+			if _post_update_stale_reprobes_left <= 0:
+				return
+			if _post_update_stale_reprobes_left == POST_UPDATE_STALE_REPROBE_LIMIT:
+				print(
+					"MCP | a pre-v4 godot-ai server holds port %d; waiting for it to exit once its AI client is relaunched"
+					% int(snapshot.get("conflict_port", 0))
+				)
+			_post_update_stale_reprobes_left -= 1
+			get_tree().create_timer(POST_UPDATE_STALE_REPROBE_SECONDS).timeout.connect(
+				_reprobe_after_update, CONNECT_ONE_SHOT
+			)
+			return
+		if _post_update_reprobes_left > 0:
 			_post_update_reprobes_left -= 1
 			get_tree().create_timer(1.0).timeout.connect(_reprobe_after_update, CONNECT_ONE_SHOT)
 		return

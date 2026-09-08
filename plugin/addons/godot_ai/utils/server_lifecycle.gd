@@ -37,6 +37,7 @@ const STOP := "STOP"
 
 const STATUS_PATH := "/godot-ai/status"
 const DEFAULT_PROBE_TIMEOUT_MS := 800
+const STALE_PRE_V4_HINT := "stale_pre_v4_server"
 const DEFAULT_PROVE_TIMEOUT_MS := 180_000
 const LAUNCH_FINGERPRINT_TIMEOUT_MS := 15_000
 const REPLACEMENT_TTL_MS := 15_000
@@ -671,7 +672,12 @@ func _effect_probe(payload: Dictionary) -> Dictionary:
 			}
 		return _blocked_probe_result("incompatible", port, live, true)
 	if PortResolver.is_port_in_use(port):
-		return _blocked_probe_result("occupied", port, live)
+		var blocked := _blocked_probe_result("occupied", port, live)
+		var pre_v4 := _untrusted_pre_v4_occupant_version(port, int(payload.timeout_ms))
+		if not pre_v4.is_empty():
+			blocked["message"] = stale_pre_v4_message(port, pre_v4)
+			blocked["target"]["hint"] = STALE_PRE_V4_HINT
+		return blocked
 	return {
 		"outcome": "free",
 		"baseline_instance_id": str(capability.get("instance_nonce", "")),
@@ -1298,6 +1304,84 @@ static func startup_report_summary(path: String, max_chars := 600) -> String:
 	if text.length() > max_chars:
 		text = text.substr(0, max_chars - 1) + "…"
 	return text
+## Untrusted, bounded, tokenless read of `/godot-ai/status`, used ONLY to
+## word the BLOCKED message when a pre-v4 godot-ai server holds the port. A
+## v3 server never wrote a v4 capability record, so the authenticated probe
+## cannot even name it, and the dock could only say "another process". This
+## peek is not a fallback: its result never enters the probe outcome, never
+## becomes a transport, and never contributes to replacement or kill
+## authority; `_blocked_probe_result` keeps `replaceable` false. It answers
+## one question, "is that a Godot AI 3.x server?", so the user is told to
+## quit the AI client whose bridge keeps it alive instead of hunting for a
+## foreign process. docs/server-lifecycle.md states the exception.
+static func _untrusted_pre_v4_occupant_version(port: int, timeout_ms: int) -> String:
+	var client := HTTPClient.new()
+	if client.connect_to_host("127.0.0.1", port) != OK:
+		return ""
+	var deadline := Time.get_ticks_msec() + maxi(1, timeout_ms)
+	while client.get_status() in [HTTPClient.STATUS_RESOLVING, HTTPClient.STATUS_CONNECTING]:
+		client.poll()
+		if Time.get_ticks_msec() >= deadline:
+			return ""
+		OS.delay_msec(10)
+	if client.get_status() != HTTPClient.STATUS_CONNECTED:
+		return ""
+	if client.request(HTTPClient.METHOD_GET, STATUS_PATH, ["Accept: application/json"]) != OK:
+		return ""
+	var body := PackedByteArray()
+	while true:
+		var status := client.get_status()
+		if status == HTTPClient.STATUS_REQUESTING:
+			client.poll()
+		elif status == HTTPClient.STATUS_BODY:
+			client.poll()
+			var chunk := client.read_response_body_chunk()
+			if body.size() + chunk.size() > MAX_STATUS_BODY_BYTES:
+				return ""
+			body.append_array(chunk)
+		elif status == HTTPClient.STATUS_CONNECTED:
+			break
+		else:
+			return ""
+		if Time.get_ticks_msec() >= deadline:
+			return ""
+		OS.delay_msec(10)
+	if client.get_response_code() != 200:
+		return ""
+	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
+	return pre_v4_version_from_status(parsed)
+
+
+## "3.2.4" for a payload that claims to be a godot-ai server below v4, else "".
+## Pure and bounded so the contract is unit-testable without a socket.
+static func pre_v4_version_from_status(parsed: Variant) -> String:
+	if not (parsed is Dictionary):
+		return ""
+	if str(parsed.get("name", "")) != "godot-ai":
+		return ""
+	var version := str(parsed.get("server_version", "")).strip_edges()
+	if version.length() > 32 or not version.begins_with("3."):
+		return ""
+	## Every dot-separated component must be digits and non-empty: "3.",
+	## "3..2" and "3.2." are not versions and must not earn the stale-server
+	## wording or the slow post-update retry.
+	for part in version.split("."):
+		if part.is_empty():
+			return ""
+		for index in range(part.length()):
+			var code := part.unicode_at(index)
+			if code < 48 or code > 57:
+				return ""
+	return version
+
+
+static func stale_pre_v4_message(port: int, version: String) -> String:
+	return (
+		"Port %d is held by a Godot AI %s server that an AI client attached before the update "
+		+ "keeps alive. Quit and relaunch that client (restarting its MCP server is not enough); "
+		+ "the old server exits on its own within about three minutes, and the editor retries "
+		+ "meanwhile. Otherwise click Restart Server afterwards."
+	) % [port, version]
 
 
 static func active_lease_count(live: Dictionary) -> int:
@@ -1336,6 +1420,8 @@ func get_status_dict() -> Dictionary:
 		"can_recover_incompatible": can_recover_incompatible_server(),
 		"conflict_port": int(_episode.get("blocked_target", {}).get("port", 0)),
 		"conflict_version": str(_episode.get("blocked_target", {}).get("version", "")),
+		## Wording-only hint from the untrusted pre-v4 peek; never authority.
+		"blocked_hint": str(_episode.get("blocked_target", {}).get("hint", "")),
 		"keep_alive": bool(_plan.get("keep_alive", false)),
 		"recovery_attempt": _endpoint_recovery_attempts,
 		"recovery_limit": ENDPOINT_RECOVERY_DELAYS_SECONDS.size(),

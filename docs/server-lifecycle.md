@@ -91,8 +91,19 @@ report is quoted, bounded and never interpreted.
 The Python server owns the private record and a per-port launch claim. HTTP,
 status, and lease routes require the HTTP bearer. The editor WebSocket stays on
 IPv4 loopback and uses a transcript-bound challenge/response before the editor
-reveals project metadata. There is no v3 parser, tokenless retry, or bare URL
-fallback in v4.
+reveals project metadata. There is no legacy v3 protocol fallback, tokenless
+retry, or bare URL fallback in v4. One deliberately untrusted read exists
+beside the probe:
+when the port is bound and the authenticated probe finds no record, the
+lifecycle performs a single bounded, tokenless GET of `/godot-ai/status`
+and, only if the body claims `name: godot-ai` with a `3.x`
+`server_version`, words the BLOCKED message as a pre-v4 server kept
+alive by a client's old bridge. That result never enters the probe
+outcome, never becomes a transport, and grants no replacement or kill
+authority; the occupant stays `replaceable: false`. After an update the
+plugin re-probes such a block slowly for about three and a half minutes,
+long enough for the old bridge's lease and the server's idle backstop to
+run out once the user quits and relaunches that client.
 
 An adopted backend remains external. Ordinary teardown drops the transport and
 leaves it running. A plugin-launched backend is stopped only with its matching

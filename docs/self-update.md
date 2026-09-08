@@ -39,7 +39,9 @@ All steps run inside the editor, on the main thread except the download.
 1. **Check.** The dock polls the releases API; a candidate is a newer `4.x`
    release exposing the six-name asset set. Dev checkouts skip this. Clicking
    Update asks first: the update saves the project, relaunches the editor,
-   and connected AI clients must be restarted afterwards.
+   and AI clients connected during the update must be quit and relaunched
+   afterwards (a client that keeps its MCP configuration in memory respawns
+   the old bridge on a mere server restart).
 2. **Download** the three canonical assets into
    `user://godot_ai_update/download/`, enforcing the release-declared sizes and
    trusted asset URLs exactly as today.
@@ -115,8 +117,11 @@ All steps run inside the editor, on the main thread except the download.
     never free between the old backend's death and ours listening: a bridge
     polling for a free port to spawn again never sees one. The
     old bridge itself refuses the new backend as incompatible, so the dock
-    tells the user to restart AI clients that were connected during the
-    update; the repinned client configuration launches the new version.
+    tells the user to quit and relaunch AI clients that were connected
+    during the update; the repinned client configuration launches the new
+    version. Quit, not restart: Claude Desktop keeps its MCP configuration
+    in memory and respawns the old bridge from it until the application
+    itself is relaunched.
 
 ## The v3-to-v4 capsule
 
