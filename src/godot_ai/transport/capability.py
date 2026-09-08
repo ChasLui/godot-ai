@@ -280,13 +280,25 @@ def private_mkdir(path: Path, *, windows: bool | None = None) -> None:
 
 
 def windows_repair_hint(directory: Path) -> str:
-    """How a user repairs a capability directory their account cannot use."""
+    """How a user repairs a private directory their account cannot use.
 
-    root = directory
+    The destructive step (remove the ``godot-ai`` tree and let it be
+    recreated) is offered only for a path inside a directory named
+    ``godot-ai``, which is the layout we create under ``%LOCALAPPDATA%``.
+    A path the user chose themselves gets non-destructive guidance.
+    """
+
+    root = None
     for candidate in (directory, *directory.parents):
         if candidate.name == "godot-ai":
             root = candidate
             break
+    if root is None:
+        return (
+            f"Godot AI cannot use the directory {directory}: this Windows account "
+            "has no access to it. Grant your account full control of that "
+            "directory, or point Godot AI at a directory your account owns."
+        )
     return (
         f"Godot AI cannot use its private directory {directory}: this Windows "
         "account has no access to it, which happens when it was first created "

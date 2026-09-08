@@ -181,7 +181,9 @@ def user_runtime_dir() -> Path:
             f"Choose a private directory owned by your user with {RUNTIME_DIR_ENV}, "
             "or correct the directory ownership and permissions."
         )
-        if os.name == "nt" and isinstance(exc, PermissionError):
+        ## The destructive repair is only ever offered for our own default
+        ## location; a GODOT_AI_RUNTIME_DIR override is the user's directory.
+        if os.name == "nt" and isinstance(exc, PermissionError) and not override:
             hint = windows_repair_hint(path)
         raise AttachStartupError(
             "ATTACH_RUNTIME_DIR_ERROR",

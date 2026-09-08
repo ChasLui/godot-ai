@@ -443,6 +443,12 @@ def test_windows_repair_hint_names_the_directory_and_the_godot_ai_root(tmp_path)
     assert "elevated" in hint
 
 
+def test_windows_repair_hint_is_non_destructive_outside_a_godot_ai_tree(tmp_path) -> None:
+    hint = capability_module.windows_repair_hint(tmp_path / "custom" / "runtime")
+    assert "Remove-Item" not in hint
+    assert str(tmp_path / "custom" / "runtime") in hint
+
+
 def test_directory_access_error_is_none_when_missing_or_writable(tmp_path) -> None:
     assert capability_module.directory_access_error(tmp_path / "missing") is None
     assert capability_module.directory_access_error(tmp_path) is None
