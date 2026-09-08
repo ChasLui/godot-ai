@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1998,6 +2000,24 @@ async def test_reload_plugin_reports_structured_failure_when_replacement_never_c
     assert error.data["project_path"] == "/tmp/test_project"
     assert error.data["timeout_seconds"] == 0.01
     assert error.data["diagnostics"]["check_sessions"] == "session_manage(op='list')"
+
+
+def test_plugin_scan_wait_fits_inside_the_reconnect_budget():
+    """The plugin's own scan wait must be long enough for a slow editor and
+    shorter than the server's reconnect wait, or a reload abandoned by the
+    plugin leaves the caller waiting for a replacement that never comes."""
+    root = Path(__file__).resolve().parents[2]
+    reload_script = (root / "plugin/addons/godot_ai/utils/plugin_reload.gd").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"^const SCAN_TIMEOUT_SECONDS := ([0-9.]+)$", reload_script, re.M)
+    assert match, "plugin_reload.gd must declare SCAN_TIMEOUT_SECONDS"
+    scan_wait = float(match.group(1))
+    assert 30.0 <= scan_wait < editor_handlers.PLUGIN_RELOAD_RECONNECT_TIMEOUT_SEC
+    smoke = (root / "script/ci-stale-server-smoke").read_text(encoding="utf-8")
+    client = re.search(r"Client\(transport, timeout=(\d+), init_timeout=\d+\)", smoke)
+    assert client, "the ownership smoke must bound its MCP client"
+    assert int(client.group(1)) > editor_handlers.PLUGIN_RELOAD_RECONNECT_TIMEOUT_SEC
 
 
 def test_reload_plugin_default_reconnect_budget_covers_slow_editor_imports():

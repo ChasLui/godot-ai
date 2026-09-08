@@ -5,7 +5,11 @@ extends RefCounted
 ## quiescence, lock and readiness protocol; this is not a hot-update grant.
 const PLUGIN_CFG := "res://addons/godot_ai/plugin.cfg"
 const ScriptWork := preload("res://addons/godot_ai/utils/script_work.gd")
-const SCAN_TIMEOUT_SECONDS := 5.0
+## A reload waits for the filesystem scan it asks for. An editor that is
+## still importing at startup can take well over 5 s to answer on a slow
+## host, and a reload abandoned then leaves the plugin unchanged while the
+## caller keeps waiting; stay under the server's 90 s reconnect budget.
+const SCAN_TIMEOUT_SECONDS := 60.0
 
 ## One command-scoped native-signal handoff, not a suspended GDScript frame.
 ## Named callbacks survive the source reload caused by the scan itself.
@@ -52,7 +56,10 @@ static func _finish_scan(work: int, timed_out: bool) -> void:
 		return
 	var pending := _take_scan()
 	if timed_out:
-		push_error("MCP | filesystem scan did not finish; plugin left unchanged, retry reload")
+		push_error(
+			"MCP | filesystem scan did not finish within %d s; plugin left unchanged, retry reload"
+			% int(SCAN_TIMEOUT_SECONDS)
+		)
 	else:
 		reload_enabled_plugin()
 	ScriptWork.finish(pending.work)
