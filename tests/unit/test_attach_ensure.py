@@ -1234,12 +1234,12 @@ async def test_unanswered_listener_with_a_usable_directory_stays_port_occupied(
     assert exc_info.value.code == "PORT_OCCUPIED"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows repair hint; faking os.name breaks pathlib")
 def test_user_runtime_dir_windows_permission_error_carries_the_repair_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = tmp_path / "godot-ai" / "runtime"
     monkeypatch.setenv(ensure_module.RUNTIME_DIR_ENV, str(runtime))
-    monkeypatch.setattr(ensure_module.os, "name", "nt")
 
     def deny(self, *_args, **_kwargs):
         raise PermissionError(13, "denied", str(self))

@@ -476,12 +476,22 @@ def test_windows_capability_directory_inherits_the_parent_acl(tmp_path) -> None:
     """The regression behind #988: no OWNER RIGHTS-only DACL, inherited ACEs only."""
     directory = tmp_path / "godot-ai" / "capabilities"
     write_capabilities(8122, HTTP, WEBSOCKET, instance_nonce=NONCE, directory=directory)
-    listing = subprocess.run(
-        ["icacls", str(directory)], capture_output=True, text=True, check=True
-    ).stdout
-    ## pytest's own temp root is created with mode 0o700, so an inherited
-    ## OWNER RIGHTS ACE can appear here; what must not appear is an explicit,
-    ## non-inherited ACE, the signature of the 0o700 DACL.
-    aces = [line for line in listing.splitlines() if ":(" in line]
-    assert aces, listing
-    assert all("(I)" in ace for ace in aces), listing
+    ## The DACL a plain mkdir yields in this parent is the environment's
+    ## baseline (a CI temp root may carry explicit, non-inheritable ACEs). The
+    ## capability directory must match it exactly: the 0o700 signature is a
+    ## different, explicit SYSTEM/Administrators/OWNER RIGHTS-only DACL.
+    control = tmp_path / "control"
+    control.mkdir()
+
+    def aces(path: Path) -> list[str]:
+        listing = subprocess.run(
+            ["icacls", str(path)], capture_output=True, text=True, check=True
+        ).stdout
+        return sorted(
+            line.replace(str(path), "").strip()
+            for line in listing.splitlines()
+            if ":(" in line
+        )
+
+    assert aces(directory) == aces(control)
+    assert not any("OWNER RIGHTS" in ace and "(I)" not in ace for ace in aces(directory))
