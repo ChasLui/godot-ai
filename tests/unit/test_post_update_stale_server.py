@@ -258,3 +258,48 @@ def test_process_kill_boundary_revalidates_exact_identity_without_child_heuristi
     assert 'taskkill", ["/PID", str(pid), "/T", "/F"]' in kill
     assert "not require_tree_proof and not pid_alive(pid)" in kill
     assert "find_windows_spawn_children" not in source
+
+
+def test_untrusted_pre_v4_peek_never_enters_the_trusted_probe_outcome() -> None:
+    """The tokenless read words the block only; it grants nothing."""
+    source = _lifecycle()
+    probe = get_func_block(source, "func _effect_probe(payload: Dictionary) -> Dictionary:")
+    peek = get_func_block(
+        source,
+        "static func _untrusted_pre_v4_occupant_version(port: int, timeout_ms: int) -> String:",
+    )
+
+    ## The peek result is a version string used for wording, applied only to
+    ## the already-built blocked result, after the authenticated branch.
+    assert probe.index("_blocked_probe_result(\"occupied\", port, live)") < probe.index(
+        "_untrusted_pre_v4_occupant_version("
+    )
+    assert 'blocked["message"] = stale_pre_v4_message(' in probe
+    assert 'blocked["target"]["hint"] = STALE_PRE_V4_HINT' in probe
+    assert "replaceable" not in probe.split("_untrusted_pre_v4_occupant_version(", 1)[1]
+    assert "_transport_from(" not in probe.split("_untrusted_pre_v4_occupant_version(", 1)[1]
+    ## The peek itself sends no capability and returns nothing but a version.
+    assert "Authorization" not in peek
+    assert "http_capability" not in peek
+    assert "return pre_v4_version_from_status(parsed)" in peek
+    ## Replacement still requires the authenticated, instance-bound match.
+    replace = get_func_block(source, "func _effect_replace(payload: Dictionary) -> Dictionary:")
+    assert "_untrusted_pre_v4_occupant_version" not in replace
+    assert "_replacement_target_matches" in replace
+
+
+def test_post_update_stale_pre_v4_block_is_reprobed_slowly_within_a_bound() -> None:
+    plugin_source = (PLUGIN / "plugin.gd").read_text(encoding="utf-8")
+    block = get_func_block(
+        plugin_source, "func _replace_server_left_by_update(snapshot: Dictionary) -> void:"
+    )
+
+    assert "const POST_UPDATE_STALE_REPROBE_SECONDS := 10.0" in plugin_source
+    assert "const POST_UPDATE_STALE_REPROBE_LIMIT := 21" in plugin_source
+    assert "ServerLifecycleManager.STALE_PRE_V4_HINT" in block
+    assert "_post_update_stale_reprobes_left -= 1" in block
+    assert "create_timer(POST_UPDATE_STALE_REPROBE_SECONDS)" in block
+    ## Never a replacement: the stale-bridge branch returns before request_replacement.
+    after_hint = block.split("STALE_PRE_V4_HINT", 1)[1]
+    stale_branch = after_hint.split("if _post_update_reprobes_left > 0:", 1)[0]
+    assert "request_replacement" not in stale_branch

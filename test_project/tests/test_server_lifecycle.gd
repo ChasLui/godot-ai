@@ -655,3 +655,39 @@ func test_launch_unproven_message_summarises_the_refusals() -> void:
 	assert_true(message.contains("not_alive×2, unbranded×1"), message)
 	var empty := Lifecycle._launch_unproven_message(2147480000, [], 0)
 	assert_true(empty.contains("none recorded"), empty)
+func test_pre_v4_version_is_read_only_from_a_godot_ai_3x_claim() -> void:
+	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "godot-ai", "server_version": "3.2.4"}), "3.2.4")
+	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "godot-ai", "server_version": "4.0.2"}), "")
+	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "other", "server_version": "3.2.4"}), "")
+	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "godot-ai", "server_version": "3.2.4 <b>x</b>"}), "")
+	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "godot-ai"}), "")
+	assert_eq(Lifecycle.pre_v4_version_from_status("not a dictionary"), "")
+	assert_eq(Lifecycle.pre_v4_version_from_status(null), "")
+
+
+func test_stale_pre_v4_block_is_worded_but_never_replaceable() -> void:
+	var manager := _manager()
+	manager.start_server()
+	var episode := manager.episode_snapshot()
+	var message := Lifecycle.stale_pre_v4_message(8000, "3.2.4")
+	assert_true(message.contains("Godot AI 3.2.4 server"), message)
+	assert_true(message.contains("Quit and relaunch"), message)
+	assert_true(manager.complete_effect(episode.id, Lifecycle.PROBE, {
+		"outcome": "blocked",
+		"reason": "occupied",
+		"message": message,
+		"target": {
+			"instance_id": "",
+			"version": "",
+			"port": 8000,
+			"replaceable": false,
+			"hint": Lifecycle.STALE_PRE_V4_HINT,
+		},
+	}))
+	var status := manager.get_status_dict()
+	assert_eq(status.state, McpServerState.FOREIGN_PORT)
+	assert_eq(status.blocked_hint, Lifecycle.STALE_PRE_V4_HINT)
+	assert_eq(status.message, message)
+	assert_false(bool(status.can_recover_incompatible), "an unauthenticated occupant is never recoverable")
+	assert_false(manager.request_replacement(), "the untrusted peek must never mint replacement authority")
+	assert_eq(manager.get_status_dict().blocked_hint, Lifecycle.STALE_PRE_V4_HINT)

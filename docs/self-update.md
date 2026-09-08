@@ -115,8 +115,11 @@ All steps run inside the editor, on the main thread except the download.
     never free between the old backend's death and ours listening: a bridge
     polling for a free port to spawn again never sees one. The
     old bridge itself refuses the new backend as incompatible, so the dock
-    tells the user to restart AI clients that were connected during the
-    update; the repinned client configuration launches the new version.
+    tells the user to quit and relaunch AI clients that were connected
+    during the update; the repinned client configuration launches the new
+    version. Quit, not restart: Claude Desktop keeps its MCP configuration
+    in memory and respawns the old bridge from it until the application
+    itself is relaunched.
 
 ## The v3-to-v4 capsule
 
