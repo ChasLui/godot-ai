@@ -672,3 +672,19 @@ def test_release_verify_loads_without_the_godot_ai_package(tmp_path):
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "standalone-ok"
     assert (tmp_path / "standalone").is_dir()
+
+
+def test_standalone_private_mkdir_matches_the_transport_rule(tmp_path, monkeypatch) -> None:
+    """Both forced branches, not just the host's: no mode on Windows (#988), 0o700 elsewhere."""
+    modes: list[int] = []
+    real_mkdir = Path.mkdir
+
+    def record(self, mode=0o777, parents=False, exist_ok=False):
+        modes.append(mode)
+        return real_mkdir(self, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", record)
+    verify.private_mkdir(tmp_path / "windows", windows=True)
+    verify.private_mkdir(tmp_path / "posix", windows=False)
+    assert modes == [0o777, 0o700]
+    assert (tmp_path / "windows").is_dir() and (tmp_path / "posix").is_dir()
