@@ -110,8 +110,7 @@ def test_owned_launch_waits_boundedly_for_a_stable_branded_process_grant() -> No
     ## capture was refused and never changes the result.
     assert launch.count("capture_process_kill_grant(pid, true, attempts)") == 2
     assert (
-        "while exact_grant.is_empty() and Time.get_ticks_msec() < fingerprint_deadline:"
-        in launch
+        "while exact_grant.is_empty() and Time.get_ticks_msec() < fingerprint_deadline:" in launch
     )
     assert '"reason": "launch_unproven" if fingerprint.is_empty() else ""' in launch
     assert "kill_exact_processes" not in launch
@@ -271,7 +270,7 @@ def test_untrusted_pre_v4_peek_never_enters_the_trusted_probe_outcome() -> None:
 
     ## The peek result is a version string used for wording, applied only to
     ## the already-built blocked result, after the authenticated branch.
-    assert probe.index("_blocked_probe_result(\"occupied\", port, live)") < probe.index(
+    assert probe.index('_blocked_probe_result("occupied", port, live)') < probe.index(
         "_untrusted_pre_v4_occupant_version("
     )
     assert 'blocked["message"] = stale_pre_v4_message(' in probe
