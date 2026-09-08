@@ -300,7 +300,7 @@ header works only until the next server start.
      "args": [
        "-T", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR",
        "you@host.docker.internal",
-       "uvx --isolated --no-config --no-env-file --no-sources --no-build --index-strategy first-index --keyring-provider disabled --index https://pypi.org/simple --default-index https://pypi.org/simple --find-links https://pypi.org/simple/godot-ai/ --link-mode copy --from godot-ai==4.0.2 godot-ai attach --port 8000 --ws-port 9500"
+       "uvx --isolated --no-config --no-env-file --no-sources --no-build --index-strategy first-index --keyring-provider disabled --index https://pypi.org/simple --default-index https://pypi.org/simple --find-links https://pypi.org/simple/godot-ai/ --link-mode copy --from godot-ai==4.0.3 godot-ai attach --port 8000 --ws-port 9500"
      ]
    }
    ```
