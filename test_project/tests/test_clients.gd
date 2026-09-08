@@ -277,7 +277,7 @@ func test_kimi_code_client_json_descriptor() -> void:
 
 func test_opencode_client_declares_json_then_jsonc_merge_tiers() -> void:
 	var client := McpClientRegistry.get_by_id("opencode")
-	assert_not_null(client)
+	assert_true(client != null, "OpenCode descriptor must be registered")
 	if client == null:
 		return
 	var merge_templates: Dictionary = client.get("config_merge_path_templates")
