@@ -9,6 +9,16 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
 ### Fixed
 
+- `camera_create` / `camera_configure` / `camera_apply_preset` with
+  `make_current` on a **Camera2D** could leave the camera not current while
+  the response and `camera_get` said it was. Godot's `Camera2D.make_current()`
+  dispatches through a scene-tree group call that silently skips a node
+  allocated at the address of a node removed and freed earlier in the same
+  editor frame, which happens after undo-history trimming, `free()`, or an
+  editor panel rebuild. The handler now detects the dropped call and applies
+  the same viewport update directly. This was the "engine-state lag" behind
+  the long-running camera test flake (#140, #278, #301, #316); the retry and
+  sleep loops written for it are gone.
 - **Bazzite / Fedora Atomic:** the server exited before publishing its
   capability record because `/home` is a symbolic link to `/var/home` on
   ostree systems and 4.0.x refused every link in a capability path. The server
