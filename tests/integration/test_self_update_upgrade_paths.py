@@ -64,6 +64,10 @@ from tests.integration._self_update_fixture import (
     write_refused_swap_driver,
 )
 
+## Needs a real Godot editor (GODOT_BIN); skipped without one and excluded
+## from the iteration loop by `pytest -m "not editor"`.
+pytestmark = pytest.mark.editor
+
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:
     return {

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -416,3 +418,88 @@ def test_target_ancestors_are_held_to_the_same_rule(monkeypatch) -> None:
 
     with pytest.raises(OSError, match="unsafe ancestor"):
         capability_module._reject_unsafe_posix_ancestors(Path(f"{FAKE_ROOT}/home/me"))
+
+
+def test_private_mkdir_passes_no_mode_on_windows(tmp_path, monkeypatch) -> None:
+    """CPython turns mode=0o700 into an OWNER RIGHTS-only DACL on Windows (#988)."""
+    modes: list[int] = []
+    real_mkdir = Path.mkdir
+
+    def record(self, mode=0o777, parents=False, exist_ok=False):
+        modes.append(mode)
+        return real_mkdir(self, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", record)
+    capability_module.private_mkdir(tmp_path / "windows", windows=True)
+    capability_module.private_mkdir(tmp_path / "posix", windows=False)
+    assert modes == [0o777, 0o700]
+
+
+def test_windows_repair_hint_names_the_directory_and_the_godot_ai_root(tmp_path) -> None:
+    directory = tmp_path / "godot-ai" / "capabilities"
+    hint = capability_module.windows_repair_hint(directory)
+    assert str(directory) in hint
+    assert f'Remove-Item -Recurse -Force "{tmp_path / "godot-ai"}"' in hint
+    assert "elevated" in hint
+
+
+def test_windows_repair_hint_is_non_destructive_outside_a_godot_ai_tree(tmp_path) -> None:
+    hint = capability_module.windows_repair_hint(tmp_path / "custom" / "runtime")
+    assert "Remove-Item" not in hint
+    assert str(tmp_path / "custom" / "runtime") in hint
+
+
+def test_directory_access_error_is_none_when_missing_or_writable(tmp_path) -> None:
+    assert capability_module.directory_access_error(tmp_path / "missing") is None
+    assert capability_module.directory_access_error(tmp_path) is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows access probe")
+def test_directory_access_error_reports_a_failed_probe(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        capability_module, "_windows_access_probe", lambda _d: PermissionError(13, "denied")
+    )
+    hint = capability_module.directory_access_error(tmp_path)
+    assert hint is not None
+    assert str(tmp_path) in hint
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows access probe")
+def test_publishing_into_an_unwritable_directory_raises_the_repair_hint(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        capability_module, "_windows_access_probe", lambda _d: PermissionError(13, "denied")
+    )
+    directory = tmp_path / "godot-ai" / "capabilities"
+    with pytest.raises(OSError) as exc_info:
+        write_capabilities(8122, HTTP, WEBSOCKET, instance_nonce=NONCE, directory=directory)
+    assert exc_info.value.errno == errno.EACCES
+    assert "Remove-Item" in str(exc_info.value)
+    assert str(tmp_path / "godot-ai") in str(exc_info.value)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows DACL inheritance")
+def test_windows_capability_directory_inherits_the_parent_acl(tmp_path) -> None:
+    """The regression behind #988: no OWNER RIGHTS-only DACL, inherited ACEs only."""
+    directory = tmp_path / "godot-ai" / "capabilities"
+    write_capabilities(8122, HTTP, WEBSOCKET, instance_nonce=NONCE, directory=directory)
+    ## The DACL a plain mkdir yields in this parent is the environment's
+    ## baseline (a CI temp root may carry explicit, non-inheritable ACEs). The
+    ## capability directory must match it exactly: the 0o700 signature is a
+    ## different, explicit SYSTEM/Administrators/OWNER RIGHTS-only DACL.
+    control = tmp_path / "control"
+    control.mkdir()
+
+    def aces(path: Path) -> list[str]:
+        listing = subprocess.run(
+            ["icacls", str(path)], capture_output=True, text=True, check=True
+        ).stdout
+        return sorted(
+            line.replace(str(path), "").strip()
+            for line in listing.splitlines()
+            if ":(" in line
+        )
+
+    assert aces(directory) == aces(control)
+    assert not any("OWNER RIGHTS" in ace and "(I)" not in ace for ace in aces(directory))

@@ -73,6 +73,21 @@ in `BLOCKED`.
 5. Wait for the new capability record, authenticate status, and bind the live
    process fingerprint before publishing `READY`.
 
+Two diagnostics sit around step 4. On Windows the plugin creates and probes
+the capability directory before it spawns: the server would otherwise create
+it with `mode=0o700`, which CPython renders as a DACL of SYSTEM, Administrators
+and OWNER RIGHTS only, and a directory first created by an elevated process is
+unusable from the user's unelevated editor, server and bridge (#988). A failed
+probe blocks the start with the directory path and the elevated `Remove-Item`
+repair; the server and the `attach` bridge report the same message from their
+side. The plugin also passes `--startup-report <user://...json>` beside
+`--pid-file` and removes any stale report before the spawn. A server that
+fails before publishing its record writes `{pid, error, message, hint}` there
+(a port already in use, an unwritable directory, an import error); the first
+report wins and the record's publication disarms it. The dock appends that
+text to "exited before publishing capabilities" and to the proof timeout. The
+report is quoted, bounded and never interpreted.
+
 The Python server owns the private record and a per-port launch claim. HTTP,
 status, and lease routes require the HTTP bearer. The editor WebSocket stays on
 IPv4 loopback and uses a transcript-bound challenge/response before the editor

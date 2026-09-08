@@ -9,6 +9,31 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
 ### Fixed
 
+- **Windows:** the server launched to replace an older godot-ai backend gave
+  up waiting for the port after 5 s, before the plugin had finished proving
+  the new process and killing the old one (each identity probe is a
+  PowerShell start), so a post-update replacement could loop on `The launched
+  process identity could not be captured`. The replacement now waits 15 s,
+  and that message names the process, whether it is still alive, and which
+  check refused it on each attempt.
+- **Windows:** the server created its private capability directory with
+  `mode=0o700`, which CPython turns into a DACL of SYSTEM, Administrators and
+  OWNER RIGHTS alone. A directory first created by an elevated process is
+  then owned by Administrators, and the user's own unelevated editor, server
+  and `godot-ai attach` bridge can never read or write it: the dock showed
+  `The managed server proof timed out at capability_record` and the bridge
+  reported `PORT_OCCUPIED` for a healthy backend. The directory now inherits
+  the per-user `%LOCALAPPDATA%` permissions; the plugin probes it before
+  spawning and the bridge checks it before blaming a foreign process, and
+  both name the directory and the elevated `Remove-Item` repair when the
+  account cannot use it
+  ([#988](https://github.com/hi-godot/godot-ai/issues/988)).
+- A plugin-spawned server that fails before publishing its capability record
+  now writes the failure to a startup report (`--startup-report`, beside the
+  pid file) and the dock appends it to the proof failure, so a port in use, an
+  unwritable directory or a crashed import is named instead of a bare
+  `proof timed out at capability_record`
+  ([#1012](https://github.com/hi-godot/godot-ai/issues/1012)).
 - `camera_create` / `camera_configure` / `camera_apply_preset` with
   `make_current` on a **Camera2D** could leave the camera not current while
   the response and `camera_get` said it was. Godot's `Camera2D.make_current()`

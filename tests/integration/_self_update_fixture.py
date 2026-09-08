@@ -1038,6 +1038,13 @@ func _update_candidate_ready() -> bool:
 func _observe_automatic_repin() -> void:
 \tif not DriverSupport.client_config_has_pin(NEXT_VERSION):
 \t\treturn
+\t## The migration worker rewrites the client file before the main thread
+\t## records completion and releases startup. Report only once the plugin
+\t## has released, so this marker follows "client migration completed" on
+\t## every platform rather than by scheduling luck.
+\tvar plugin := DriverSupport.find_godot_ai_plugin()
+\tif plugin == null or not bool(plugin.get("_normal_start_released")):
+\t\treturn
 \tprint("SELF_UPDATE_TEST | repinned Codex command pin=%s" % NEXT_VERSION)
 \t_repin_observed = true
 

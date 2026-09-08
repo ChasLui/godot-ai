@@ -11,10 +11,72 @@ PID from the file and doesn't care whether we cleaned up.
 from __future__ import annotations
 
 import atexit
+import json
 import os
 from pathlib import Path
 
 _PID_FILE_PATH: Path | None = None
+_STARTUP_REPORT_PATH: Path | None = None
+_STARTUP_REPORT_WRITTEN = False
+_STARTUP_REPORT_MAX_CHARS = 2000
+
+
+def install_startup_report(path: str | os.PathLike[str] | None) -> Path | None:
+    """Remember where a startup failure should be reported.
+
+    The plugin passes ``--startup-report <absolute path>`` beside the pid
+    file and removes any stale report before it spawns us, so a report that
+    exists after a launch was written by that launch. Nothing is written
+    here; :func:`report_startup_failure` writes only when startup fails
+    before the capability record is published, which is exactly the window
+    the plugin otherwise sees as "exited before publishing capabilities".
+    """
+    global _STARTUP_REPORT_PATH, _STARTUP_REPORT_WRITTEN
+    _STARTUP_REPORT_PATH = Path(path).expanduser() if path else None
+    _STARTUP_REPORT_WRITTEN = False
+    return _STARTUP_REPORT_PATH
+
+
+def startup_report_path() -> Path | None:
+    return _STARTUP_REPORT_PATH
+
+
+def disarm_startup_report() -> None:
+    """Stop reporting: the capability record is published, startup is over."""
+    global _STARTUP_REPORT_PATH
+    _STARTUP_REPORT_PATH = None
+
+
+def report_startup_failure(exc: BaseException, *, hint: str = "") -> Path | None:
+    """Write ``exc`` to the startup report so the editor dock can show it.
+
+    The first report wins: a site that knows the cause (the port preflight,
+    the capability directory) reports a specific message before the generic
+    exception reaches ``main``'s catch-all. Best effort: a report that
+    cannot be written must never mask the failure it describes, so every
+    error here is swallowed.
+    """
+    global _STARTUP_REPORT_WRITTEN
+    path = _STARTUP_REPORT_PATH
+    if path is None or _STARTUP_REPORT_WRITTEN:
+        return None
+    if isinstance(exc, SystemExit) and not isinstance(exc.code, str):
+        message = f"exited with code {exc.code}"
+    else:
+        message = str(exc).strip() or exc.__class__.__name__
+    payload = {
+        "pid": os.getpid(),
+        "error": exc.__class__.__name__,
+        "message": message[:_STARTUP_REPORT_MAX_CHARS],
+        "hint": hint[:_STARTUP_REPORT_MAX_CHARS],
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=True) + "\n", encoding="utf-8")
+    except OSError:
+        return None
+    _STARTUP_REPORT_WRITTEN = True
+    return path
 
 
 def install_pid_file(path: str | os.PathLike[str] | None) -> Path | None:

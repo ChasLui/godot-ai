@@ -21,6 +21,10 @@ from tests.integration._self_update_fixture import (
     run_godot_editor,
 )
 
+## Needs a real Godot editor (GODOT_BIN); skipped without one and excluded
+## from the iteration loop by `pytest -m "not editor"`.
+pytestmark = pytest.mark.editor
+
 PROBE = '''@tool
 extends EditorPlugin
 
@@ -145,6 +149,29 @@ def test_codex_workers_complete_after_two_ordinary_editor_restarts(tmp_path: Pat
     assert len(set(pids)) == 3, pids
 
 
+def _stop_process_tree(process: subprocess.Popen) -> None:
+    """Stop the backend and everything it spawned.
+
+    A uv-created venv's Windows ``python.exe`` is a launcher whose real
+    interpreter runs as a child. ``terminate()`` alone kills the launcher and
+    leaves the server alive, still holding the capability lock, which then
+    fails the unlink below and leaks a listener into the next boot.
+    """
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 async def test_native_capability_record_survives_backend_restarts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -195,12 +222,7 @@ async def test_native_capability_record_survives_backend_restarts(
                 instances.append(first.instance_id)
                 print(f"NATIVE_BACKEND_{boot}: record readable; two authenticated adoptions passed")
             finally:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                _stop_process_tree(process)
         # Windows TerminateProcess does not run Python lifespan cleanup.
         path.unlink(missing_ok=True)
         path.with_suffix(".lock").unlink(missing_ok=True)

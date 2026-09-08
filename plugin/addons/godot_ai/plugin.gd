@@ -1214,6 +1214,7 @@ func _capture_lifecycle_plan() -> Dictionary:
 		"expected_version": ClientConfigurator.get_plugin_version(),
 		"server_command": ClientConfigurator.get_server_command(),
 		"pid_file": ProjectSettings.globalize_path(PortResolver.SERVER_PID_FILE),
+		"startup_report": ProjectSettings.globalize_path(PortResolver.SERVER_STARTUP_REPORT),
 		"http_port_reserved": WindowsPortReservation.is_port_excluded(http_port),
 		"excluded_domains": str(policy.get("excluded_domains", "")),
 		"allow_hosts": str(policy.get("allow_hosts", "")),

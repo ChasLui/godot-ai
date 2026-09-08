@@ -361,3 +361,36 @@ func _private_record_in(directory: String) -> String:
 func _remove_private_record_in(directory: String) -> void:
 	DirAccess.remove_absolute(directory.path_join("http-8122.json"))
 	DirAccess.remove_absolute(directory)
+
+
+func test_directory_write_problem_is_empty_for_a_writable_directory() -> void:
+	var directory := _scratch_dir.path_join("writable")
+	assert_eq(McpTransportCapability.directory_write_problem_for(directory), "")
+	assert_true(DirAccess.dir_exists_absolute(directory), "the probe creates the directory")
+	assert_eq(DirAccess.get_files_at(directory).size(), 0, "the probe file is removed")
+	DirAccess.remove_absolute(directory)
+
+
+func test_directory_write_problem_names_the_directory_and_the_repair() -> void:
+	## A regular file where the directory must go fails creation on every OS,
+	## standing in for the Administrators-owned directory of #988.
+	var blocker := _scratch_dir.path_join("godot-ai")
+	var file := FileAccess.open(blocker, FileAccess.WRITE)
+	file.store_string("x")
+	file.close()
+	var directory := blocker.path_join("capabilities")
+	var problem := McpTransportCapability.directory_write_problem_for(directory)
+	assert_true(problem.contains(directory), "names the directory: %s" % problem)
+	assert_true(
+		problem.contains("Remove-Item -Recurse -Force \"%s\"" % blocker),
+		"names the godot-ai root to remove: %s" % problem
+	)
+	assert_true(problem.contains("elevated"), "explains the cause: %s" % problem)
+	DirAccess.remove_absolute(blocker)
+
+
+func test_directory_write_problem_is_windows_only() -> void:
+	if OS.get_name() == "Windows":
+		skip("POSIX leaves capability directory creation to the server")
+		return
+	assert_eq(McpTransportCapability.directory_write_problem(8122), "")
