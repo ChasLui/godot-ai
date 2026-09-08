@@ -492,9 +492,9 @@ def test_windows_capability_directory_inherits_the_parent_acl(tmp_path) -> None:
     ## qualification row's C: profile temp shows OWNER RIGHTS on plain
     ## children), so the assertions compare against these siblings rather
     ## than against an absolute picture of inherited entries.
-    control = tmp_path / "control"
+    control = directory.parent / "control"
     control.mkdir()
-    restricted = tmp_path / "restricted"
+    restricted = directory.parent / "restricted"
     restricted.mkdir(mode=0o700)
 
     def aces(path: Path) -> list[str]:
