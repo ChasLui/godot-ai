@@ -19,8 +19,6 @@ import zipfile
 from pathlib import Path
 from typing import Any, NoReturn
 
-from godot_ai.transport.capability import private_mkdir
-
 REPOSITORY = "hi-godot/godot-ai"
 ASSET_NAME = "godot-ai-v4-plugin.zip"
 MANIFEST_NAME = "godot-ai-v4-plugin.manifest.json"
@@ -492,6 +490,23 @@ def _verify_installed_tree(root: Path, manifest: dict[str, Any]) -> None:
     }
     if hash_tree(root)["files"] != expected:
         _fail("installed v4 tree", "files do not exactly match the signed inventory")
+
+
+def private_mkdir(path: Path, *, windows: bool | None = None) -> None:
+    """Create one directory only this user can read; standard library only.
+
+    The same rule as ``godot_ai.transport.capability.private_mkdir``: POSIX
+    gets mode ``0o700``, Windows deliberately no mode, because CPython turns
+    ``mode=0o700`` into an OWNER RIGHTS-only DACL there (#988). It lives here
+    too because ``script/v4-release`` loads this file standalone, on a runner
+    where the ``godot_ai`` package is not installed, so this module may
+    import nothing from the package.
+    """
+    on_windows = os.name == "nt" if windows is None else windows
+    if on_windows:
+        path.mkdir(exist_ok=True)
+    else:
+        path.mkdir(mode=0o700, exist_ok=True)
 
 
 def _private_mkdir_parents(directory: Path) -> None:
