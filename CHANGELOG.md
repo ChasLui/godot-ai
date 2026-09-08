@@ -9,6 +9,12 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
 ### Fixed
 
+- **OpenCode:** Configure wrote only `opencode.json` while OpenCode merges
+  it with `opencode.jsonc`, the latter winning per key, so a stale
+  `godot-ai` entry in an existing `opencode.jsonc` kept overriding the new
+  one. The descriptor now declares that merge order: Configure updates the
+  effective last definition, status verifies it, Remove clears both
+  ([#1011](https://github.com/hi-godot/godot-ai/issues/1011)).
 - A Godot AI 3.x server left on the port by an AI client whose bridge
   attached before the update was reported as "held by another process". The
   lifecycle now performs one untrusted, tokenless status read solely to word

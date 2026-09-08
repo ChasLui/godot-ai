@@ -275,6 +275,23 @@ func test_kimi_code_client_json_descriptor() -> void:
 	assert_eq(client.entry_extra_fields.get("transport"), "http")
 
 
+func test_opencode_client_declares_json_then_jsonc_merge_tiers() -> void:
+	var client := McpClientRegistry.get_by_id("opencode")
+	assert_not_null(client)
+	if client == null:
+		return
+	var merge_templates: Dictionary = client.get("config_merge_path_templates")
+	assert_false(merge_templates.is_empty(), "OpenCode must declare its merge tiers (#1011)")
+	var merge_key := McpPathTemplate.platform_key(merge_templates)
+	assert_false(merge_key.is_empty(), "OpenCode merge tiers must support this platform")
+	if not merge_key.is_empty():
+		var merge_paths: PackedStringArray = merge_templates[merge_key]
+		assert_eq(merge_paths.size(), 2)
+		if merge_paths.size() == 2:
+			assert_true(String(merge_paths[0]).ends_with("/opencode.json"))
+			assert_true(String(merge_paths[1]).ends_with("/opencode.jsonc"), "jsonc is the winning tier")
+
+
 func test_pi_client_json_descriptor() -> void:
 	## Regression guard: pi uses the `pi-codemode-mcp` extension to talk to
 	## MCP servers, which reads definitions from ~/.pi/agent/mcp.json (first
