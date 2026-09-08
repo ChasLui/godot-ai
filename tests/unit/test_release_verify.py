@@ -501,6 +501,32 @@ def test_install_rollback_on_a_fresh_project_leaves_no_live_tree(release, tmp_pa
     )
 
 
+def test_process_liveness_needs_no_third_party_module():
+    assert v4_release._process_is_live(os.getpid())
+    finished = subprocess.Popen([sys.executable, "-c", "pass"])
+    finished.wait()
+    assert not v4_release._process_is_live(finished.pid)
+    assert not v4_release._process_is_live(0)
+    assert "import psutil" not in Path(v4_release.__file__).read_text(encoding="utf-8")
+
+
+def test_install_over_a_v4_tree_still_replaces_owned_mismatches(release, tmp_path):
+    """A hand-run recovery may repin every owned entry, whatever the live version."""
+    project = _project(tmp_path)
+    live = project / "addons/godot_ai"
+    config = live / "plugin.cfg"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace('version="3.2.4"', 'version="4.0.1"'),
+        encoding="utf-8",
+    )
+
+    assert v4_release.main(_install_args(release, project)) == 0
+
+    marker = _marker(project)
+    assert marker["from_version"] == "4.0.1"
+    assert marker["replace_owned_mismatches"] is True
+
+
 def test_install_refuses_a_lock_held_by_another_live_process(release, tmp_path):
     project = _project(tmp_path)
     update = project / "addons/.godot_ai_update"

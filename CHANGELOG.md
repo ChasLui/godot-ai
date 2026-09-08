@@ -9,6 +9,16 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
 ### Fixed
 
+- **Closed-editor recovery installer** (`script/v4-release install`, the
+  #999 procedure): on Windows it treated every update-lock holder as dead
+  when `psutil` was not installed, which the published command never
+  installs, so a live editor's lock was replaced instead of refused; the
+  check now asks the kernel directly and needs no third-party module. A
+  recovery over an existing 4.x tree also records
+  `replace_owned_mismatches`, so the plugin's first start may repin every
+  owned client entry that launches Godot AI, whatever the live tree's
+  version, instead of refusing startup over a leftover v3-shaped entry
+  ([#999](https://github.com/hi-godot/godot-ai/issues/999)).
 - **Windows:** the server launched to replace an older godot-ai backend gave
   up waiting for the port after 5 s, before the plugin had finished proving
   the new process and killing the old one (each identity probe is a
