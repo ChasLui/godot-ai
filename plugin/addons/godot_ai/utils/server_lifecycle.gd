@@ -27,6 +27,13 @@ const RECOVERING := "RECOVERING"
 ## 0.6 s each) and the launch must capture the new process, then re-read and
 ## kill the old one, before the replacement gives up waiting for the port.
 const REPLACEMENT_WAIT_FOR_PORT_MS := 15_000
+## How long the replacement gives its launched server to reach that port
+## wait before it kills the occupant. The launch may be uvx installing the
+## version the update just brought in; until the server reports it is at its
+## bind loop, the occupant keeps serving and the port never looks free to an
+## attach bridge that would spawn a backend of its own into the gap.
+const REPLACEMENT_LAUNCH_READY_TIMEOUT_MS := 120_000
+const STARTUP_PHASE_WAITING_FOR_PORT := "waiting_for_port"
 const STOPPING := "STOPPING"
 
 const PROBE := "PROBE"
@@ -960,6 +967,25 @@ func _effect_replace(payload: Dictionary) -> Dictionary:
 				"reason": str(launch.get("reason", "launch_failed")),
 				"message": str(launch.get("message", "Server launch failed.")),
 			}
+		## Kill only once the launched server is at its bind loop; a launch
+		## that spends seconds getting there (uvx installing the new version)
+		## would otherwise leave the port free for a bridge to spawn into.
+		var ready := _wait_for_launch_port_wait(
+			str(launch_plan.get("startup_report", "")), int(launch.pid), str(launch.fingerprint)
+		)
+		if not bool(ready.get("ok", false)):
+			PortResolver.kill_exact_processes(
+				[{"pid": int(launch.pid), "fingerprint": str(launch.fingerprint)}], true
+			)
+			return {"ok": false, "reason": str(ready.reason), "message": str(ready.message)}
+		if (
+			not PortResolver.find_all_pids_on_port(port).has(pid)
+			or PortResolver.process_fingerprint(pid) != fingerprint
+		):
+			PortResolver.kill_exact_processes(
+				[{"pid": int(launch.pid), "fingerprint": str(launch.fingerprint)}], true
+			)
+			return {"ok": false, "reason": "replacement_target_changed", "message": "The authorized server changed before replacement."}
 	var killed := PortResolver.kill_exact_processes(
 		[{"pid": pid, "fingerprint": fingerprint}],
 		true,
@@ -974,6 +1000,54 @@ func _effect_replace(payload: Dictionary) -> Dictionary:
 		PortResolver.wait_for_port_free(port, 5.0)
 		return {"ok": not PortResolver.is_port_in_use(port), "reason": ""}
 	return {"ok": true, "reason": "", "launch": launch}
+
+
+## Poll the launched server's startup report until it says the port wait is
+## running, the process is gone, or the budget is spent. No report path
+## (a plan without one) keeps the old ordering: kill straight away.
+func _wait_for_launch_port_wait(startup_report: String, pid: int, fingerprint: String) -> Dictionary:
+	if startup_report.is_empty():
+		return {"ok": true}
+	var deadline := Time.get_ticks_msec() + REPLACEMENT_LAUNCH_READY_TIMEOUT_MS
+	while true:
+		if launch_reached_port_wait(startup_report):
+			return {"ok": true}
+		if PortResolver.process_fingerprint(pid) != fingerprint:
+			return {
+				"ok": false,
+				"reason": "replacement_launch_exited",
+				"message": (
+					"The replacement server exited before it could wait for the port."
+					+ startup_report_summary(startup_report)
+				),
+			}
+		if Time.get_ticks_msec() >= deadline:
+			return {
+				"ok": false,
+				"reason": "replacement_launch_stalled",
+				"message": "The replacement server did not reach its port wait within %d s." % int(REPLACEMENT_LAUNCH_READY_TIMEOUT_MS / 1000),
+			}
+		OS.delay_msec(100)
+	return {"ok": true}
+
+
+## Whether the startup report records the server at its port wait (the
+## phase it writes before its first bind attempt when the plugin asked it to
+## wait for the port). A failure written later replaces the phase.
+static func launch_reached_port_wait(startup_report: String) -> bool:
+	if startup_report.is_empty() or not FileAccess.file_exists(startup_report):
+		return false
+	var file := FileAccess.open(startup_report, FileAccess.READ)
+	if file == null:
+		return false
+	var raw := file.get_as_text().strip_edges()
+	file.close()
+	if raw.is_empty() or raw.length() > 8192:
+		return false
+	var parsed: Variant = JSON.parse_string(raw)
+	if not (parsed is Dictionary):
+		return false
+	return str(parsed.get("phase", "")) == STARTUP_PHASE_WAITING_FOR_PORT
 
 
 func _effect_stop(payload: Dictionary) -> Dictionary:

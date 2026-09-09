@@ -30,6 +30,15 @@ with a real attached bridge.
 
 ### Fixed
 
+- The restarted editor's replacement of the server an attached bridge left on
+  the port no longer loses the port to that bridge. The replacement server
+  reports the moment it reaches its port wait and the occupant is killed only
+  then, so a launch that spends seconds in uvx installing the new version no
+  longer leaves the port free for the bridge to spawn a backend of the old
+  version into (the 4.0.4 qualification's Ubuntu rows: three replacement
+  attempts, each `HTTP port 8000 is already in use`). A bridge whose backend
+  vanishes with the port free now also waits five seconds for a replacement
+  to answer before spawning its own.
 - The dock no longer looks frozen on "Downloading…" after the download has
   finished: activation now names each phase ("Verifying signed update…",
   "Staging the verified tree…", "Waiting for client workers…", "Activating

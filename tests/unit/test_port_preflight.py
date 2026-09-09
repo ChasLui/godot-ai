@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -197,3 +198,56 @@ def test_preflight_gives_up_after_the_wait(monkeypatch) -> None:
         assert raised.value.code == EXIT_PORT_IN_USE
     finally:
         holder.close()
+
+
+def test_preflight_reports_the_port_wait_phase_before_binding(monkeypatch, tmp_path) -> None:
+    from godot_ai.runtime_info import (
+        STARTUP_PHASE_WAITING_FOR_PORT,
+        install_startup_report,
+    )
+
+    report = tmp_path / "startup-report.json"
+    install_startup_report(report)
+    try:
+        holder, port = _hold_port()
+        monkeypatch.setenv("GODOT_AI_WAIT_FOR_PORT_MS", "300")
+        try:
+            with pytest.raises(SystemExit):
+                preflight_check_port(port, label="HTTP", setting="godot_ai/http_port")
+        finally:
+            holder.close()
+        # The wait phase was written first; the failure after the wait replaced it.
+        final = json.loads(report.read_text(encoding="utf-8"))
+        assert final["error"] == "OSError"
+        assert "already in use" in final["message"]
+
+        probe, free_port = _hold_port()
+        probe.close()
+        report.unlink()
+        install_startup_report(report)
+        held = preflight_check_port(free_port, label="HTTP", setting="godot_ai/http_port")
+        try:
+            phase = json.loads(report.read_text(encoding="utf-8"))
+            assert phase["phase"] == STARTUP_PHASE_WAITING_FOR_PORT
+            assert phase["port"] == free_port
+            assert "error" not in phase
+        finally:
+            assert held is not None
+            held.close()
+    finally:
+        install_startup_report(None)
+
+
+def test_preflight_writes_no_phase_on_the_ordinary_path(monkeypatch, tmp_path) -> None:
+    from godot_ai.runtime_info import install_startup_report
+
+    report = tmp_path / "startup-report.json"
+    install_startup_report(report)
+    try:
+        monkeypatch.delenv("GODOT_AI_WAIT_FOR_PORT_MS", raising=False)
+        probe, port = _hold_port()
+        probe.close()
+        assert preflight_check_port(port, label="HTTP", setting="godot_ai/http_port") is None
+        assert not report.exists()
+    finally:
+        install_startup_report(None)
