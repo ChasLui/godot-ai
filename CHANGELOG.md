@@ -7,6 +7,17 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
 ## Unreleased
 
+### Added
+
+- `resource_manage(op="physics_shape_generate")`: bulk-generate a
+  `StaticBody3D` or `Area3D` sibling with a fitted `CollisionShape3D` (box,
+  sphere, capsule or cylinder) for every `MeshInstance3D` path, as one undo
+  action. Every path is validated before anything is written, and a deferred
+  request re-validates each mesh again when its body is added, so a scene
+  edited meanwhile fails the request instead of leaving a partial batch.
+  Contributed by @michaltomczykowski in
+  [#892](https://github.com/hi-godot/godot-ai/pull/892).
+
 ### Fixed
 
 - A server that refused to start now says why in the dock. The launch-failure

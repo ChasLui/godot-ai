@@ -3578,6 +3578,31 @@ async def test_physics_shape_generate_handler():
     assert client.calls[-1]["timeout"] == physics_shape_handlers.PHYSICS_SHAPE_GENERATE_TIMEOUT_SEC
 
 
+async def test_physics_shape_generate_threads_scene_file_only_when_given():
+    client = StubClient()
+    runtime = DirectRuntime(registry=SessionRegistry(), client=client)
+    await physics_shape_handlers.physics_shape_generate(
+        runtime, paths=["/Main/Body"], scene_file="res://main.tscn"
+    )
+    assert client.calls[-1]["params"]["scene_file"] == "res://main.tscn"
+    await physics_shape_handlers.physics_shape_generate(runtime, paths=["/Main/Body"])
+    assert "scene_file" not in client.calls[-1]["params"]
+
+
+def test_physics_shape_generate_timeout_derives_from_the_plugin_budget():
+    """The plugin owns the deferred budget; Python adds only the transport margin."""
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "plugin/addons/godot_ai/handlers/physics_shape_handler.gd"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"^const _GENERATE_DEFERRED_TIMEOUT_MS := (\d+)$", source, re.M)
+    assert match, "the handler must declare _GENERATE_DEFERRED_TIMEOUT_MS"
+    assert int(match.group(1)) == physics_shape_handlers.PHYSICS_SHAPE_GENERATE_PLUGIN_TIMEOUT_MS
+    assert physics_shape_handlers.PHYSICS_SHAPE_GENERATE_TIMEOUT_SEC == pytest.approx(
+        int(match.group(1)) / 1000.0 + 2.0
+    )
+
+
 async def test_physics_shape_generate_defaults():
     client = StubClient()
     runtime = DirectRuntime(registry=SessionRegistry(), client=client)
