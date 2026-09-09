@@ -168,3 +168,33 @@ def test_nightly_diagnostics_are_credential_free_and_not_a_release_gate() -> Non
 
 def test_legacy_auto_bump_tag_push_workflow_is_retired() -> None:
     assert not (WORKFLOWS / "bump-and-release.yml").exists()
+
+
+def test_discord_changelog_follows_a_successful_promotion() -> None:
+    raw = (WORKFLOWS / "discord-changelog.yml").read_text(encoding="utf-8")
+    workflow = yaml.safe_load(raw)
+    release = yaml.safe_load((WORKFLOWS / "release.yml").read_text(encoding="utf-8"))
+    triggers = workflow.get(True, workflow.get("on"))
+    assert set(triggers) == {"release", "workflow_run", "workflow_dispatch"}
+    # The promotion publishes with the workflow token, so `release: published`
+    # never starts this workflow; the promotion run completing is what does.
+    assert triggers["workflow_run"] == {
+        "workflows": [release["name"]],
+        "types": ["completed"],
+    }
+    assert workflow["permissions"] == {"contents": "read", "actions": "read"}
+    post = workflow["jobs"]["post"]
+    assert "github.event.workflow_run.conclusion == 'success'" in post["if"]
+    receipt = next(step for step in post["steps"] if step.get("id") == "receipt")
+    assert receipt["if"] == "github.event_name == 'workflow_run'"
+    assert "--name v4-publication-receipt" in receipt["run"]
+    assert "steps.receipt.outputs.tag" in post["steps"][-1]["env"]["TAG"]
+    # The receipt artifact the announcement reads is the one promotion uploads.
+    upload = next(
+        step
+        for step in release["jobs"]["publish-github"]["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    )
+    assert upload["with"]["name"] == "v4-publication-receipt"
+    # Publication jobs stay untouched: no announcement step joins them.
+    assert "discord" not in str(release).lower()
