@@ -946,21 +946,16 @@ func _update_crash_panel(server_status: Dictionary) -> void:
 			and not bool(server_status.get("can_recover_incompatible", false))
 		)
 
-	## #647: the quick picker only moves `godot_ai/http_port`, so hide it
-	## when the diagnosed conflict is on the WebSocket port — the crash
-	## body already points at `godot_ai/ws_port` in Editor Settings.
+	## The picker moves both ports (#647 hid it for a WebSocket-side
+	## conflict when it could only move the HTTP port), seeded with the
+	## diagnosed conflict so only the contested port changes.
 	var conflict_port := int(server_status.get("conflict_port", 0))
-	var http_conflict := conflict_port <= 0 or conflict_port == ClientConfigurator.http_port()
 	var port_picker_visible := (
-		state == ServerStateScript.PORT_EXCLUDED
-		or (state == ServerStateScript.FOREIGN_PORT and http_conflict)
+		state == ServerStateScript.PORT_EXCLUDED or state == ServerStateScript.FOREIGN_PORT
 	)
 	_port_picker_panel.visible = port_picker_visible
 	if port_picker_visible:
-		## Seed the spinbox with a suggested non-reserved port each time the
-		## panel surfaces. Idempotent when the user already has a good
-		## candidate queued up.
-		_port_picker_panel.seed_suggested_port()
+		_port_picker_panel.seed_suggested_ports(conflict_port)
 
 
 static func _crash_body_for_state(state: int, server_status: Dictionary = {}) -> String:
@@ -1073,8 +1068,8 @@ func _on_log_logging_enabled_changed(enabled: bool) -> void:
 
 ## Signal handler for the extracted PortPickerPanel. The replaceable Dock emits
 ## a copied value intent; the composition root owns persistence and reload.
-func _on_port_apply_requested(new_port: int) -> void:
-	settings_apply_requested.emit({"http_port": new_port}, true)
+func _on_port_apply_requested(new_http_port: int, new_ws_port: int) -> void:
+	settings_apply_requested.emit({"http_port": new_http_port, "ws_port": new_ws_port}, true)
 
 
 func _refresh_server_label(server_status: Dictionary = {}) -> void:

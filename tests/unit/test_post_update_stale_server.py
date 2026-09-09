@@ -270,9 +270,8 @@ def test_untrusted_pre_v4_peek_never_enters_the_trusted_probe_outcome() -> None:
 
     ## The peek result is a version string used for wording, applied only to
     ## the already-built blocked result, after the authenticated branch.
-    assert probe.index('_blocked_probe_result("occupied", port, live)') < probe.index(
-        "_untrusted_pre_v4_occupant_version("
-    )
+    occupied = probe.index('_blocked_probe_result("occupied", port, live, false, detail)')
+    assert occupied < probe.index("_untrusted_pre_v4_occupant_version(")
     assert 'blocked["message"] = stale_pre_v4_message(' in probe
     assert 'blocked["target"]["hint"] = STALE_PRE_V4_HINT' in probe
     assert "replaceable" not in probe.split("_untrusted_pre_v4_occupant_version(", 1)[1]

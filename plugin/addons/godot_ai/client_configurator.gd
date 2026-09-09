@@ -349,6 +349,17 @@ static func apply_endpoint_settings(changes: Dictionary) -> Dictionary:
 				if float(value) != float(port) or port < MIN_PORT or port > MAX_PORT:
 					return {"ok": false, "error": "HTTP port is outside the supported range"}
 				normalized[McpSettings.SETTING_HTTP_PORT] = port
+			"ws_port":
+				if not (value is int or value is float):
+					return {"ok": false, "error": "WebSocket port must be an integer"}
+				var ws_port_value := int(value)
+				if (
+					float(value) != float(ws_port_value)
+					or ws_port_value < MIN_PORT
+					or ws_port_value > MAX_PORT
+				):
+					return {"ok": false, "error": "WebSocket port is outside the supported range"}
+				normalized[SETTING_WS_PORT] = ws_port_value
 			"excluded_domains":
 				if not (value is String):
 					return {"ok": false, "error": "excluded domains must be text"}
@@ -366,6 +377,10 @@ static func apply_endpoint_settings(changes: Dictionary) -> Dictionary:
 				normalized[McpSettings.SETTING_ALLOW_HOSTS] = allowed
 			_:
 				return {"ok": false, "error": "unknown endpoint setting: %s" % key}
+	var next_http := int(normalized.get(McpSettings.SETTING_HTTP_PORT, http_port()))
+	var next_ws := int(normalized.get(SETTING_WS_PORT, ws_port()))
+	if next_http == next_ws:
+		return {"ok": false, "error": "HTTP and WebSocket ports must differ"}
 	var es := EditorInterface.get_editor_settings()
 	if es == null:
 		return {"ok": false, "error": "EditorSettings is unavailable"}

@@ -5,6 +5,22 @@ this file at the release's exact source commit, and its "What's Changed"
 section lists every merged pull request; this file keeps the part worth
 reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
+## Unreleased
+
+### Fixed
+
+- A server that refused to start now says why in the dock. The launch-failure
+  message (`The launched process identity could not be captured…`) appends the
+  server's own startup report, which two 4.0.3 reports had on disk unread:
+  `WebSocket port 19630 is already in use by another process`.
+- Moving the HTTP port alone no longer lands the next launch on a WebSocket
+  port the previous server still holds: the lifecycle preflights the WebSocket
+  port before launching and names `godot_ai/ws_port`, and the dock's port picker
+  moves both ports, keeping whichever one is free.
+- `Port N is occupied by another process` now says why a godot-ai record for
+  that port did not authenticate the occupant (a probe timeout, a different
+  instance, a non-godot-ai listener), so the report is actionable.
+
 ## 4.0.3 (2026-09-08)
 
 Stabilizes the v4 line on Windows and Linux after the 3.x crossing: the

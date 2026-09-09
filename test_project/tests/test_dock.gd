@@ -1872,9 +1872,9 @@ func test_recoverable_incompatible_hides_docs_link_button() -> void:
 ## lambdas with closure-captured locals don't reliably evaluate the body
 ## under the test runner, so a typed receiver is the safe form.
 class _PortApplySpy:
-	var captured: Array[int] = []
-	func on_apply(new_port: int) -> void:
-		captured.append(new_port)
+	var captured: Array = []
+	func on_apply(new_http_port: int, new_ws_port: int) -> void:
+		captured.append([new_http_port, new_ws_port])
 
 
 class _LogToggleSpy:
@@ -1901,9 +1901,14 @@ func test_port_picker_panel_emits_apply_requested_for_in_range_port() -> void:
 	var spy := _PortApplySpy.new()
 	panel.port_apply_requested.connect(spy.on_apply)
 	panel._spinbox.value = 9000
+	panel._ws_spinbox.value = 9501
 	panel._on_apply_pressed()
-	assert_eq(spy.captured.size(), 1, "in-range port must emit exactly once")
-	assert_eq(spy.captured[0], 9000, "emitted port must match the spinbox value")
+	assert_eq(spy.captured.size(), 1, "in-range ports must emit exactly once")
+	assert_eq(spy.captured[0], [9000, 9501], "emitted ports must match both spinboxes")
+	## Equal ports can never bind together; the panel refuses them itself.
+	panel._ws_spinbox.value = 9000
+	panel._on_apply_pressed()
+	assert_eq(spy.captured.size(), 1, "equal HTTP and WebSocket ports must not emit")
 	panel.free()
 
 
@@ -1927,11 +1932,48 @@ func test_port_picker_panel_skips_emit_for_out_of_range_port() -> void:
 	panel.free()
 
 
+func test_port_picker_seeds_only_the_contested_port() -> void:
+	## The server binds HTTP and WebSocket together. Moving only the HTTP port
+	## onto a free number left the launch dying on the WebSocket port the old
+	## server still held; the picker now moves whichever port is contested or
+	## in use and keeps the other so client entries stay valid where they can.
+	var panel := PortPickerPanelScript.new()
+	panel.setup()
+	var http := McpClientConfigurator.http_port()
+	var ws := McpClientConfigurator.ws_port()
+	panel.port_in_use_probe = func(port: int) -> bool: return port == ws
+	panel.seed_suggested_ports(0)
+	assert_eq(int(panel._spinbox.value), http, "a free HTTP port keeps its value")
+	assert_true(int(panel._ws_spinbox.value) != ws, "a held WebSocket port gets a suggestion")
+	assert_true(int(panel._ws_spinbox.value) != int(panel._spinbox.value))
+	panel.port_in_use_probe = func(_port: int) -> bool: return false
+	panel.seed_suggested_ports(http)
+	assert_true(int(panel._spinbox.value) != http, "the diagnosed conflict port moves")
+	assert_eq(int(panel._ws_spinbox.value), ws, "a free WebSocket port keeps its value")
+	panel.free()
+
+
+func test_websocket_port_conflict_shows_the_picker_and_names_the_setting() -> void:
+	## The lifecycle now refuses to launch onto a held WebSocket port and names
+	## `godot_ai/ws_port`; the picker can move that port, so it is offered.
+	_dock._build_ui()
+	_dock._port_picker_panel.port_in_use_probe = func(_port: int) -> bool: return false
+	var ws := McpClientConfigurator.ws_port()
+	_dock._update_crash_panel({
+		"state": McpServerState.FOREIGN_PORT,
+		"conflict_port": ws,
+		"message": "WebSocket port %d is already in use by another process. Set `godot_ai/ws_port` in Editor Settings." % ws,
+	})
+	assert_true(_dock._crash_panel.visible, "diagnostic panel shows")
+	assert_true(_dock._port_picker_panel.visible, "the picker moves both ports, so a WS conflict offers it")
+	assert_true(_dock._crash_output.get_parsed_text().contains("godot_ai/ws_port"), _dock._crash_output.get_parsed_text())
+
+
 func test_dock_emits_copied_endpoint_setting_intents_without_persisting() -> void:
 	var dock := McpDockScript.new()
 	var spy := _SettingsApplySpy.new()
 	dock.settings_apply_requested.connect(spy.on_apply)
-	dock._on_port_apply_requested(23000)
+	dock._on_port_apply_requested(23000, 23500)
 	dock._tools_pending_excluded = PackedStringArray(["audio"])
 	dock._telemetry_pending_enabled = false
 	dock._on_tools_apply()
@@ -1940,7 +1982,7 @@ func test_dock_emits_copied_endpoint_setting_intents_without_persisting() -> voi
 	dock._allow_hosts_edit.text = "10.0.0.5"
 	dock._on_allow_hosts_apply()
 	assert_eq(spy.captured.size(), 3)
-	assert_eq(spy.captured[0], {"changes": {"http_port": 23000}, "reload": true})
+	assert_eq(spy.captured[0], {"changes": {"http_port": 23000, "ws_port": 23500}, "reload": true})
 	assert_eq(str(spy.captured[1].changes.excluded_domains), "audio")
 	assert_false(bool(spy.captured[1].changes.telemetry_enabled))
 	assert_eq(str(spy.captured[2].changes.allow_hosts), "10.0.0.5")
