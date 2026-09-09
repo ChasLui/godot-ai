@@ -31,6 +31,15 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 - `Port N is occupied by another process` now says why a godot-ai record for
   that port did not authenticate the occupant (a probe timeout, a different
   instance, a non-godot-ai listener), so the report is actionable.
+- After an update the restarted plugin replaces any older server of its
+  major version that an attach bridge left on the port, not only the exact
+  version it superseded, and its post-update status probe waits 3 s instead
+  of 800 ms so a backend still settling on the port is not reported as
+  "held by another process" with nothing replacing it.
+- The post-update banner and log line say "AI clients keep working" when the
+  clients were attached through 4.1.0 or newer (their bridges follow the new
+  server), and keep telling the user to quit and relaunch only for bridges
+  that predate it.
 
 ### Changed
 
@@ -42,6 +51,10 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
   instance. The attach protocol version, ports and excluded domains are still
   gated exactly. Bridges from 4.0.3 and earlier still refuse a newer server,
   so the first update onto this version needs one last relaunch.
+- Release qualification's real-editor A-to-B update now runs with a real
+  `godot-ai attach` bridge attached through the update, and passes only when
+  that same bridge process serves the updated editor afterwards, so the gate
+  measures the workflow users actually run.
 
 ## 4.0.3 (2026-09-08)
 
