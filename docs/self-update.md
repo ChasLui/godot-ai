@@ -47,7 +47,11 @@ All steps run inside the editor, on the main thread except the download.
 2. **Download** the three canonical assets into
    `user://godot_ai_update/download/`, enforcing the release-declared sizes and
    trusted asset URLs exactly as today.
-3. **Verify** (`McpReleaseVerifier`, pure, unit-testable):
+3. **Verify** (`McpReleaseVerifier`, pure, unit-testable). From here each
+   phase names itself in the dock ("Verifying signed update…", "Staging the
+   verified tree…", "Waiting for client workers…", "Activating verified
+   update…") and yields a frame before its main-thread work, so the dock
+   repaints instead of freezing on "Downloading…":
    - the manifest parses as canonical JSON with `schema_version` 1 and the
      fixed key set; the signature verifies over the manifest bytes with the
      embedded key (`Crypto.verify`, SHA-256, PKCS#1 v1.5, the same primitive

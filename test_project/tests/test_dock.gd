@@ -940,7 +940,10 @@ func test_update_status_text_never_replaces_the_button_action() -> void:
 	## and the button only enables or disables.
 	_dock._build_ui()
 	_dock.present_update_check({"version": "4.0.3", "label_text": "Update available: v4.0.3"})
-	for status in ["Downloading…", "Update preparation failed", "Activating verified update…"]:
+	for status in [
+		"Downloading…", "Verifying signed update…", "Staging the verified tree…",
+		"Waiting for client workers…", "Update preparation failed", "Activating verified update…",
+	]:
 		_dock.present_update_state({
 			"install_in_flight": true, "status_text": status, "button_disabled": true,
 		})
