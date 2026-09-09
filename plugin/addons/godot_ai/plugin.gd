@@ -156,7 +156,7 @@ const POST_UPDATE_PROBE_TIMEOUT_MS := 3000
 ## major version (#1024). A client attached through an update from an older
 ## version still runs a bridge that refuses the new server and must be quit
 ## and relaunched; from this version on it follows the new server itself.
-const FIRST_BRIDGE_TOLERANT_VERSION := "4.1.0"
+const FIRST_BRIDGE_TOLERANT_VERSION := "4.0.4"
 ## Set once the live tree has been renamed; the lock then belongs to the restart.
 var _update_swapped := false
 var _post_update_action := ""
@@ -932,7 +932,7 @@ func _present_post_update_complete() -> void:
 
 
 ## Whether a bridge a client attached at `from_version` keeps serving the
-## server at `to_version` (#1024: same major version, from 4.1.0 on).
+## server at `to_version` (#1024: same major version, from 4.0.4 on).
 static func attached_bridges_follow(from_version: String, to_version: String) -> bool:
 	var from_tuple := McpServerVersionCheck.version_tuple(from_version)
 	var to_tuple := McpServerVersionCheck.version_tuple(to_version)
