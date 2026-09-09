@@ -146,7 +146,11 @@ def test_codex_workers_complete_after_two_ordinary_editor_restarts(tmp_path: Pat
         assert "--port" in entry["args"] and "--ws-port" in entry["args"], entry
         pids.append(result["pid"])
         (project / "result.json").unlink()
-    assert len(set(pids)) == 3, pids
+    ## Three boots produced three fresh results (each result.json is unlinked
+    ## after it is read). Windows reuses process ids freely, so distinct pids
+    ## are not evidence of distinct boots and are not asserted (CI saw
+    ## [5036, 3004, 5036]).
+    assert all(type(pid) is int and pid > 0 for pid in pids), pids
 
 
 def _stop_process_tree(process: subprocess.Popen) -> None:
