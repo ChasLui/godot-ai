@@ -38,10 +38,12 @@ All steps run inside the editor, on the main thread except the download.
 
 1. **Check.** The dock polls the releases API; a candidate is a newer `4.x`
    release exposing the six-name asset set. Dev checkouts skip this. Clicking
-   Update asks first: the update saves the project, relaunches the editor,
-   and AI clients connected during the update must be quit and relaunched
-   afterwards (a client that keeps its MCP configuration in memory respawns
-   the old bridge on a mere server restart).
+   Update asks first: the update saves the project and relaunches the
+   editor. AI clients connected during the update keep working when the
+   version they were attached through is 4.1.0 or newer (their bridge follows
+   a server of the same major version); from an older version they must be
+   quit and relaunched afterwards (a client that keeps its MCP configuration
+   in memory respawns the old bridge on a mere server restart).
 2. **Download** the three canonical assets into
    `user://godot_ai_update/download/`, enforcing the release-declared sizes and
    trusted asset URLs exactly as today.
@@ -116,12 +118,18 @@ All steps run inside the editor, on the main thread except the download.
     hands that very socket to its HTTP and WebSocket servers, so the port is
     never free between the old backend's death and ours listening: a bridge
     polling for a free port to spawn again never sees one. The
-    old bridge itself refuses the new backend as incompatible, so the dock
-    tells the user to quit and relaunch AI clients that were connected
-    during the update; the repinned client configuration launches the new
-    version. Quit, not restart: Claude Desktop keeps its MCP configuration
-    in memory and respawns the old bridge from it until the application
-    itself is relaunched.
+    old bridge, when it predates 4.1.0, refuses the new backend as
+    incompatible, so the dock tells the user to quit and relaunch AI clients
+    that were connected during the update; the repinned client configuration
+    launches the new version. Quit, not restart: Claude Desktop keeps its MCP
+    configuration in memory and respawns the old bridge from it until the
+    application itself is relaunched. A 4.1.0+ bridge keeps serving a server
+    of the same major version and follows the replacement on its own, so the
+    dock says the clients keep working instead. The restarted plugin replaces
+    the superseded server, or any older server of its major version a bridge
+    left on the port, once, probing with a longer timeout than an ordinary
+    start so a backend still settling on the port is not mistaken for a
+    foreign process.
 
 ## The v3-to-v4 capsule
 
