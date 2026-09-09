@@ -7,6 +7,7 @@ import errno
 import hmac
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -685,7 +686,7 @@ class BackendEnsurer:
 
     def _validate(self, status: BackendStatus) -> BackendStatus:
         differences: dict[str, Any] = {}
-        if status.server_version != self._required_version:
+        if not compatible_server_version(status.server_version, self._required_version):
             differences["server_version"] = {
                 "running": status.server_version,
                 "required": self._required_version,
@@ -713,6 +714,34 @@ class BackendEnsurer:
                 },
             )
         return status
+
+
+## A complete `major.minor.patch`, optionally followed by one separator and a
+## non-empty suffix (`4.0.3+local.1`, `4.1.0-rc1`); a dangling separator or
+## any other shape is not a version and falls back to exact equality.
+_VERSION_MAJOR = re.compile(r"^(\d+)\.\d+\.\d+(?:$|[.+-][0-9A-Za-z][0-9A-Za-z.+-]*$)")
+
+
+def compatible_server_version(running: str, required: str) -> bool:
+    """Whether a bridge pinned to ``required`` may keep serving ``running``.
+
+    The bridge is a stdio-to-HTTP proxy: tool catalogs, schemas and handlers
+    all come from the backend, so a backend one patch or one minor ahead of
+    (or behind) the bridge's package is the same protocol with a different
+    catalog. Requiring exact equality forced every AI client to be quit and
+    relaunched after every plugin update, because the running bridges kept
+    refusing the freshly updated server. Same major version is the contract
+    now; a version either side cannot parse falls back to exact equality, and
+    ``attach_protocol_version`` still gates the wire format separately.
+    """
+
+    if running == required:
+        return True
+    running_major = _VERSION_MAJOR.match(running.strip())
+    required_major = _VERSION_MAJOR.match(required.strip())
+    if running_major is None or required_major is None:
+        return False
+    return running_major.group(1) == required_major.group(1)
 
 
 def _capability_directory_inaccessible(port: int, repair: str) -> AttachStartupError:
@@ -743,7 +772,7 @@ def _incompatible_backend(detail: str, *, payload: dict[str, Any]) -> AttachStar
         f"A different Godot AI backend is already running: {detail}.",
         hint=(
             "This running MCP client session cannot be repaired. Reconfigure every Godot AI "
-            "MCP client to the same package version and ports, then start a new MCP client "
+            "MCP client to the same major package version and ports, then start a new MCP client "
             "session. The bridge will not replace the running backend."
         ),
         data=payload,

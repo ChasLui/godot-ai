@@ -27,6 +27,7 @@ from godot_ai.attach.ensure import (
     BackendStatus,
     SpawnedBackend,
     _backend_spawn_env,
+    compatible_server_version,
     detached_spawn_kwargs,
     port_available,
     probe_backend,
@@ -822,6 +823,56 @@ async def test_lock_is_held_until_health_and_two_callers_spawn_once(tmp_path: Pa
 
     assert first.instance_id == second.instance_id
     assert state["spawns"] == 1
+
+
+@pytest.mark.parametrize(
+    ("running", "required", "compatible"),
+    [
+        ("4.0.3", "4.0.2", True),
+        ("4.0.2", "4.0.3", True),
+        ("4.1.0", "4.0.3", True),
+        ("4.0.3", "4.1.0", True),
+        ("4.2.0+local.1", "4.0.3", True),
+        ("4.0.3", "4.0.3", True),
+        ("5.0.0", "4.0.3", False),
+        ("3.2.5", "4.0.3", False),
+        ("0.0.0", "4.0.3", False),
+        ("older-client-pin", "4.0.3", False),
+        ("4.0.3+", "4.0.3", False),
+        ("4.0.3.", "4.0.3", False),
+        ("4.0.3-", "4.0.3", False),
+        ("4.0.3.post1", "4.0.3", True),
+        ("4.0", "4.0.3", False),
+        ("4.0.3", "0+unknown", False),
+        ("weird", "weird", True),
+    ],
+)
+def test_bridge_tolerates_a_backend_of_the_same_major_version(
+    running: str, required: str, compatible: bool
+) -> None:
+    """A bridge is a proxy; the backend owns the catalog. Same major is the
+    contract, exact equality the fallback for anything that does not parse."""
+    assert compatible_server_version(running, required) is compatible
+
+
+async def test_patch_and_minor_skew_adopt_without_spawn(tmp_path: Path) -> None:
+    """The updated server on the port keeps serving the client's old bridge."""
+    spawns: list[bool] = []
+
+    async def probe(_port: int, *_args) -> BackendStatus:
+        return status(version="4.1.0")
+
+    ensurer = BackendEnsurer(
+        probe=probe,
+        spawn=lambda *_args: spawns.append(True),  # type: ignore[arg-type,return-value]
+        runtime_dir=tmp_path,
+        required_version="4.0.3",
+    )
+
+    adopted = await ensurer.ensure()
+
+    assert adopted.server_version == "4.1.0"
+    assert spawns == []
 
 
 async def test_version_skew_is_terminal_without_spawn_or_kill(tmp_path: Path) -> None:
