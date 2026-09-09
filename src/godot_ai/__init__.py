@@ -95,6 +95,21 @@ def preflight_check_port(
     ## the fail-fast contract below (#647).
     wait_seconds = _wait_for_port_seconds()
     wait_deadline = time.monotonic() + wait_seconds
+    if wait_seconds > 0:
+        ## Tell the plugin the bind loop is running before the first attempt:
+        ## it kills the occupant only now, and a launch that took seconds to
+        ## get here (uvx installing the new version) no longer leaves the
+        ## port free for a bridge to spawn into.
+        from godot_ai.runtime_info import STARTUP_PHASE_WAITING_FOR_PORT, report_startup_phase
+
+        report_startup_phase(
+            STARTUP_PHASE_WAITING_FOR_PORT,
+            port=port,
+            label=label,
+            ## The plugin names each launch; a phase from another launch's
+            ## report must never pass for this one.
+            launch_id=os.environ.get(LAUNCH_ID_ENV, "").strip(),
+        )
     while True:
         sock = socket.socket(family, socket.SOCK_STREAM)
         keep = False
@@ -139,6 +154,7 @@ def preflight_check_port(
 
 
 WAIT_FOR_PORT_ENV = "GODOT_AI_WAIT_FOR_PORT_MS"
+LAUNCH_ID_ENV = "GODOT_AI_LAUNCH_ID"
 WAIT_FOR_PORT_RETRY_SECONDS = 0.05
 WAIT_FOR_PORT_MAX_SECONDS = 30.0
 

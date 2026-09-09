@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1192,6 +1193,8 @@ def test_backend_spawn_environment_removes_parent_process_markers(
 ) -> None:
     monkeypatch.setenv(PLUGIN_SPAWNED_ENV, "1")
     monkeypatch.setenv("GODOT_AI_OWNER_PID", "123")
+    monkeypatch.setenv("GODOT_AI_WAIT_FOR_PORT_MS", "15000")
+    monkeypatch.setenv("GODOT_AI_LAUNCH_ID", "launch-3")
     monkeypatch.setenv("GODOT_AI_WS_TOKEN", "secret")
     monkeypatch.setenv(DEV_TRANSPORT_ENV, "streamable-http")
     monkeypatch.setenv("GODOT_AI_UNRELATED", "preserved")
@@ -1202,6 +1205,8 @@ def test_backend_spawn_environment_removes_parent_process_markers(
     assert env["GODOT_AI_UNRELATED"] == "preserved"
     assert PLUGIN_SPAWNED_ENV not in env
     assert "GODOT_AI_OWNER_PID" not in env
+    assert "GODOT_AI_WAIT_FOR_PORT_MS" not in env
+    assert "GODOT_AI_LAUNCH_ID" not in env
     assert env["GODOT_AI_HTTP_CAPABILITY"] == TEST_TRANSPORT_CAPABILITIES.http
     assert env["GODOT_AI_WS_TOKEN"] == TEST_TRANSPORT_CAPABILITIES.websocket
     assert DEV_TRANSPORT_ENV not in env
@@ -1324,3 +1329,111 @@ def test_default_runtime_dir_permission_error_carries_the_destructive_repair(
     assert exc_info.value.code == "ATTACH_RUNTIME_DIR_ERROR"
     assert "Remove-Item" in exc_info.value.hint
     assert str(tmp_path / "godot-ai") in exc_info.value.hint
+
+
+@pytest.mark.asyncio
+async def test_lost_backend_waits_for_its_replacement_before_spawning(tmp_path: Path) -> None:
+    """After serving a backend, a free port means an editor is replacing it.
+
+    The bridge gives the replacement a grace to answer instead of spawning a
+    backend of its own into the gap (the Ubuntu qualification rows of 4.0.4).
+    """
+    probes = {"n": 0}
+    spawns = {"n": 0}
+    statuses = [status(instance_id="instance-a")] + [None] * 4 + [status(instance_id="instance-b")]
+
+    async def probe(_port: int, *_args) -> BackendStatus | None:
+        index = min(probes["n"], len(statuses) - 1)
+        probes["n"] += 1
+        return statuses[index]
+
+    def port_check(port: int) -> bool:
+        ## Free while the old backend is gone and the replacement is not up.
+        return port != 8000 or 1 <= probes["n"] <= 4
+
+    def spawn(*_args) -> SpawnedBackend:
+        spawns["n"] += 1
+        return SpawnedBackend(FakeProcess(), tmp_path / "backend.log")
+
+    ensurer = BackendEnsurer(
+        probe=probe,
+        spawn=spawn,
+        port_check=port_check,
+        runtime_dir=tmp_path,
+        health_timeout_seconds=1,
+        poll_seconds=0.001,
+        replacement_grace_seconds=1.0,
+    )
+
+    first = await ensurer.ensure()
+    second = await ensurer.ensure()
+
+    assert first.instance_id == "instance-a"
+    assert second.instance_id == "instance-b"
+    assert spawns["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_lost_backend_is_respawned_once_the_grace_passes(tmp_path: Path) -> None:
+    probes = {"n": 0}
+    spawns = {"n": 0}
+
+    async def probe(_port: int, *_args) -> BackendStatus | None:
+        probes["n"] += 1
+        if probes["n"] == 1:
+            return status(instance_id="instance-a")
+        if spawns["n"]:
+            return status(instance_id="instance-spawned")
+        return None
+
+    def port_check(port: int) -> bool:
+        return port != 8000 or probes["n"] >= 1
+
+    def spawn(*_args) -> SpawnedBackend:
+        spawns["n"] += 1
+        return SpawnedBackend(FakeProcess(), tmp_path / "backend.log")
+
+    ensurer = BackendEnsurer(
+        probe=probe,
+        spawn=spawn,
+        port_check=port_check,
+        runtime_dir=tmp_path,
+        health_timeout_seconds=1,
+        poll_seconds=0.001,
+        replacement_grace_seconds=0.05,
+    )
+
+    assert (await ensurer.ensure()).instance_id == "instance-a"
+    started = time.monotonic()
+    second = await ensurer.ensure()
+
+    assert second.instance_id == "instance-spawned"
+    assert spawns["n"] == 1
+    assert time.monotonic() - started >= 0.05
+
+
+@pytest.mark.asyncio
+async def test_first_ensure_never_waits_for_a_replacement(tmp_path: Path) -> None:
+    spawns = {"n": 0}
+
+    async def probe(_port: int, *_args) -> BackendStatus | None:
+        return status() if spawns["n"] else None
+
+    def spawn(*_args) -> SpawnedBackend:
+        spawns["n"] += 1
+        return SpawnedBackend(FakeProcess(), tmp_path / "backend.log")
+
+    ensurer = BackendEnsurer(
+        probe=probe,
+        spawn=spawn,
+        port_check=lambda _port: True,
+        runtime_dir=tmp_path,
+        health_timeout_seconds=1,
+        poll_seconds=0.001,
+        replacement_grace_seconds=5.0,
+    )
+
+    started = time.monotonic()
+    assert (await ensurer.ensure()).instance_id == "instance-a"
+    assert spawns["n"] == 1
+    assert time.monotonic() - started < 1.0

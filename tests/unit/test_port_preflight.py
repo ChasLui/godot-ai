@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -197,3 +198,90 @@ def test_preflight_gives_up_after_the_wait(monkeypatch) -> None:
         assert raised.value.code == EXIT_PORT_IN_USE
     finally:
         holder.close()
+
+
+def test_preflight_reports_the_port_wait_phase_while_the_port_is_still_held(
+    monkeypatch, tmp_path
+) -> None:
+    """The phase must exist before the bind succeeds: the plugin kills the
+    occupant on reading it, so a phase written after bind and listen would
+    reopen the port-free window the phase exists to close."""
+    from godot_ai.runtime_info import (
+        STARTUP_PHASE_WAITING_FOR_PORT,
+        install_startup_report,
+    )
+
+    report = tmp_path / "startup-report.json"
+    install_startup_report(report)
+    holder, port = _hold_port()
+    monkeypatch.setenv("GODOT_AI_WAIT_FOR_PORT_MS", "3000")
+    monkeypatch.setenv("GODOT_AI_LAUNCH_ID", "launch-7")
+    outcome: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            outcome["held"] = preflight_check_port(port, label="HTTP", setting="godot_ai/http_port")
+        except BaseException as exc:  # pragma: no cover - reported by the assertions
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run)
+    try:
+        worker.start()
+        deadline = time.monotonic() + 2.0
+        phase: dict[str, object] | None = None
+        while phase is None and time.monotonic() < deadline:
+            try:
+                phase = json.loads(report.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                time.sleep(0.01)
+        assert worker.is_alive(), outcome
+        assert phase is not None, "no phase record while the port was held"
+        assert phase["phase"] == STARTUP_PHASE_WAITING_FOR_PORT
+        assert phase["port"] == port
+        assert phase["launch_id"] == "launch-7"
+        assert "error" not in phase
+        holder.close()
+        worker.join(timeout=2.5)
+        assert not worker.is_alive()
+        held = outcome.get("held")
+        assert held is not None and held.getsockname()[1] == port
+        held.close()
+        # The wait ending is not a failure: the phase record stays as it was.
+        assert json.loads(report.read_text(encoding="utf-8")) == phase
+    finally:
+        holder.close()
+        install_startup_report(None)
+
+
+def test_preflight_failure_after_the_wait_replaces_the_phase(monkeypatch, tmp_path) -> None:
+    from godot_ai.runtime_info import install_startup_report
+
+    report = tmp_path / "startup-report.json"
+    install_startup_report(report)
+    holder, port = _hold_port()
+    monkeypatch.setenv("GODOT_AI_WAIT_FOR_PORT_MS", "300")
+    try:
+        with pytest.raises(SystemExit):
+            preflight_check_port(port, label="HTTP", setting="godot_ai/http_port")
+        final = json.loads(report.read_text(encoding="utf-8"))
+        assert final["error"] == "OSError"
+        assert "already in use" in final["message"]
+        assert "phase" not in final
+    finally:
+        holder.close()
+        install_startup_report(None)
+
+
+def test_preflight_writes_no_phase_on_the_ordinary_path(monkeypatch, tmp_path) -> None:
+    from godot_ai.runtime_info import install_startup_report
+
+    report = tmp_path / "startup-report.json"
+    install_startup_report(report)
+    try:
+        monkeypatch.delenv("GODOT_AI_WAIT_FOR_PORT_MS", raising=False)
+        probe, port = _hold_port()
+        probe.close()
+        assert preflight_check_port(port, label="HTTP", setting="godot_ai/http_port") is None
+        assert not report.exists()
+    finally:
+        install_startup_report(None)
