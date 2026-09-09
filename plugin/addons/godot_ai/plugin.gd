@@ -1536,7 +1536,13 @@ static func _remove_tree(path: String) -> void:
 ## against the downloaded bytes; nothing outside the editor is executed. The
 ## live tree is touched only by the two renames inside `swap`, and only after
 ## the staged tree has been re-hashed against the signed manifest.
+## Activation runs on the main thread: verification hashes the archive,
+## staging extracts it, and the worker quiescence waits for threads. Each
+## phase names itself in the dock and yields one frame first so the label
+## repaints; without that the dock sat on "Downloading…" for seconds after
+## the download had finished, looking frozen.
 func install_downloaded_update(package: Dictionary) -> void:
+	await _present_install_phase("Verifying signed update…")
 	var manifest_bytes := FileAccess.get_file_as_bytes(str(package.get("manifest", "")))
 	var signature := FileAccess.get_file_as_bytes(str(package.get("signature", "")))
 	var verified: Dictionary = ReleaseVerifier.verify_manifest(
@@ -1557,12 +1563,14 @@ func install_downloaded_update(package: Dictionary) -> void:
 	if not bool(checked.get("ok", false)):
 		_fail_update("Update verification failed", "signed update refused: %s" % str(checked.get("error", "")))
 		return
+	await _present_install_phase("Staging the verified tree…")
 	var staged: Dictionary = UpdateInstaller.stage(str(package.get("archive", "")), manifest)
 	if not bool(staged.get("ok", false)):
 		_fail_update("Update staging failed", "update staging refused: %s" % str(staged.get("error", "")))
 		return
 	if _update_manager != null:
 		_update_manager.discard_downloads()
+	await _present_install_phase("Waiting for client workers…")
 	if _client_jobs != null:
 		var jobs_quiesced: Dictionary = _client_jobs.quiesce(
 			Time.get_ticks_msec() + ClientConfigurator.PREWARM_TIMEOUT_MS
@@ -1617,6 +1625,19 @@ func install_downloaded_update(package: Dictionary) -> void:
 	UpdateInstaller.persist_next_start_enabled(PLUGIN_CFG)
 	print("MCP | update to %s swapped in; restarting the editor" % to_version)
 	UpdateInstaller.request_restart.call_deferred()
+
+
+## Name the activation phase in the dock and let it repaint before the
+## phase's main-thread work begins.
+func _present_install_phase(status_text: String) -> void:
+	_on_update_install_state_changed({
+		"install_in_flight": true,
+		"status_text": status_text,
+		"button_disabled": true,
+	})
+	var tree := get_tree()
+	if tree != null:
+		await tree.process_frame
 
 
 func _fail_update(status_text: String, error: String) -> void:

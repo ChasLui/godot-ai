@@ -549,16 +549,17 @@ def test_signed_update_restarts_into_matching_live_server(
             "SELF_UPDATE_TEST | pre-update instance_id=",
             f"SELF_UPDATE_TEST | configured Codex command pin={base_version}",
             "SELF_UPDATE_TEST | requesting canonical signed install",
-            # The local bundle is staged before the swap; the HTTPS observer is
-            # connected after the plugin's activation listener, which runs the
-            # whole swap synchronously, so its line lands after the restart
-            # announcement. Whether A is stopped or merely detached before the
-            # swap depends on the attached agent holding a lease at that
-            # instant; the restarted editor replaces either occupant.
+            # The local bundle is staged before the swap. The HTTPS observer is
+            # connected after the plugin's activation listener, but activation
+            # names each phase in the dock and yields a frame before verifying,
+            # staging and quiescing, so the observer's line lands before the
+            # restart announcement. Whether A is stopped or merely detached
+            # before the swap depends on the attached agent holding a lease at
+            # that instant; the restarted editor replaces either occupant.
             *(
                 [
-                    f"MCP | update to {next_version} swapped in; restarting the editor",
                     "SELF_UPDATE_TEST | HTTPS canonical triple downloaded",
+                    f"MCP | update to {next_version} swapped in; restarting the editor",
                 ]
                 if delivery is not None
                 else [

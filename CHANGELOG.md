@@ -20,6 +20,10 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
 ### Fixed
 
+- The dock no longer looks frozen on "Downloading…" after the download has
+  finished: activation now names each phase ("Verifying signed update…",
+  "Staging the verified tree…", "Waiting for client workers…", "Activating
+  verified update…") and lets the dock repaint before the phase's work runs.
 - A server that refused to start now says why in the dock. The launch-failure
   message (`The launched process identity could not be captured…`) appends the
   server's own startup report, which two 4.0.3 reports had on disk unread:

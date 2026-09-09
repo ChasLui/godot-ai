@@ -320,6 +320,21 @@ def test_root_owned_workers_quiesce_during_update_and_plugin_exit() -> None:
         "_dispatcher.clear()"
     )
     assert "var script_quiesced := prepare_for_update_reload()" in install_block
+    ## Each main-thread phase names itself in the dock and yields a frame first,
+    ## so the label repaints instead of the dock freezing on "Downloading…".
+    for label, work in (
+        ("Verifying signed update…", "ReleaseVerifier.verify_manifest("),
+        ("Staging the verified tree…", "UpdateInstaller.stage("),
+        ("Waiting for client workers…", "_client_jobs.quiesce("),
+    ):
+        phase = f'await _present_install_phase("{label}")'
+        assert phase in install_block, label
+        assert install_block.index(phase) < install_block.index(work), label
+    present = get_func_block(
+        plugin_source, "func _present_install_phase(status_text: String) -> void:"
+    )
+    assert '"install_in_flight": true' in present
+    assert "await tree.process_frame" in present
     exit_block = get_func_block(plugin_source, "func _exit_tree() -> void:")
     assert "_client_jobs.quiesce()" in exit_block
 
