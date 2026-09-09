@@ -433,6 +433,7 @@ func test_post_update_banner_depends_on_whether_bridges_can_follow() -> void:
 	assert_true(label.begins_with("AI clients that were connected during the update keep working on v4.1.1"), label)
 	assert_true(Plugin.attached_bridges_follow("4.1.0", "4.2.0"))
 	assert_true(Plugin.attached_bridges_follow("4.1.0", "4.1.0"))
+	assert_true(Plugin.attached_bridges_follow("4.0.4", "4.0.5"), "the tolerant bridge shipped in 4.0.4")
 	assert_false(Plugin.attached_bridges_follow("4.1.0", "5.0.0"), "a major change needs new bridges")
 	assert_false(Plugin.attached_bridges_follow("4.0.3", "4.1.0"), "a 4.0.x bridge refuses the new server")
 	assert_false(Plugin.attached_bridges_follow("3.2.5", "4.1.0"))

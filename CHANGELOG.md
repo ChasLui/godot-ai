@@ -5,7 +5,17 @@ this file at the release's exact source commit, and its "What's Changed"
 section lists every merged pull request; this file keeps the part worth
 reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
-## Unreleased
+## 4.0.4 (2026-09-09)
+
+Updating with AI clients attached no longer means quitting and relaunching
+them: from this version a client's `godot-ai attach` bridge keeps serving a
+server of the same major version, and the restarted editor replaces the
+server an old bridge left on the port by itself. Clients attached through
+4.0.3 or earlier still need one last relaunch after this update. Also the
+dock names each activation phase, a held WebSocket port is diagnosed before
+launch, `physics_shape_generate` lands, and release qualification updates
+with a real attached bridge.
+[Compare v4.0.3...v4.0.4](https://github.com/hi-godot/godot-ai/compare/v4.0.3...v4.0.4).
 
 ### Added
 
@@ -41,7 +51,7 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
   of 800 ms so a backend still settling on the port is not reported as
   "held by another process" with nothing replacing it.
 - The post-update banner and log line say "AI clients keep working" when the
-  clients were attached through 4.1.0 or newer (their bridges follow the new
+  clients were attached through 4.0.4 or newer (their bridges follow the new
   server), and keep telling the user to quit and relaunch only for bridges
   that predate it.
 

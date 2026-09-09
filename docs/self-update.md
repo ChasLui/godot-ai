@@ -40,7 +40,7 @@ All steps run inside the editor, on the main thread except the download.
    release exposing the six-name asset set. Dev checkouts skip this. Clicking
    Update asks first: the update saves the project and relaunches the
    editor. AI clients connected during the update keep working when the
-   version they were attached through is 4.1.0 or newer (their bridge follows
+   version they were attached through is 4.0.4 or newer (their bridge follows
    a server of the same major version); from an older version they must be
    quit and relaunched afterwards (a client that keeps its MCP configuration
    in memory respawns the old bridge on a mere server restart).
@@ -124,12 +124,12 @@ All steps run inside the editor, on the main thread except the download.
     hands that very socket to its HTTP and WebSocket servers, so the port is
     never free between the old backend's death and ours listening: a bridge
     polling for a free port to spawn again never sees one. The
-    old bridge, when it predates 4.1.0, refuses the new backend as
+    old bridge, when it predates 4.0.4, refuses the new backend as
     incompatible, so the dock tells the user to quit and relaunch AI clients
     that were connected during the update; the repinned client configuration
     launches the new version. Quit, not restart: Claude Desktop keeps its MCP
     configuration in memory and respawns the old bridge from it until the
-    application itself is relaunched. A 4.1.0+ bridge keeps serving a server
+    application itself is relaunched. A 4.0.4+ bridge keeps serving a server
     of the same major version and follows the replacement on its own, so the
     dock says the clients keep working instead. That post-update replacement
     probes with a longer timeout than an ordinary start, so a backend still

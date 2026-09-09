@@ -530,10 +530,10 @@ def test_signed_update_restarts_into_matching_live_server(
     print(f"server A: {'stopped' if 'MCP | stopped server' in initial_log else 'detached (lease)'}")
     print(f"replacement: {'needed' if replaced_line in restarted_log else 'not needed'}")
     print(f"blocks before the start: {blocks_before_start}")
-    ## From 4.1.0 on the attached bridge follows the new server (same major);
+    ## From 4.0.4 on the attached bridge follows the new server (same major);
     ## an older bridge refuses it and the user is told to quit and relaunch.
     base_tuple = tuple(int(part) for part in base_version.split(".")[:3])
-    if base_tuple >= (4, 1, 0):
+    if base_tuple >= (4, 0, 4):
         expected_client_line = f"keep working on v{next_version}"
     else:
         expected_client_line = f"must be quit and relaunched to use v{next_version}"
