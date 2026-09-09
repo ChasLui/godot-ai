@@ -51,6 +51,8 @@ BRIDGE_ATTACHED_FILE = "_bridge_attached.done"
 BRIDGE_SERVED_B_FILE = "_bridge_served_b.done"
 BRIDGE_ATTACH_TIMEOUT_SECONDS = 180.0
 BRIDGE_CALL_TIMEOUT_SECONDS = 60.0
+## A stop must finish one 1 s poll slice plus the close's own process waits.
+BRIDGE_STOP_TIMEOUT_SECONDS = 50.0
 
 
 def current_python_version() -> str:
@@ -549,14 +551,24 @@ class AttachedBridge:
         self._thread = threading.Thread(target=self._run, name="attached-bridge", daemon=True)
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._next_id = 0
+        self._process: subprocess.Popen[bytes] | None = None
 
     def __enter__(self) -> AttachedBridge:
         self._thread.start()
         return self
 
     def __exit__(self, *_exc: object) -> None:
+        """Stop the bridge and prove it stopped: the row reads the bridge log,
+        scans the project and waits for the ports right after this, so a
+        thread that outlived its budget must not keep a process alive."""
         self._stop.set()
-        self._thread.join(timeout=BRIDGE_CALL_TIMEOUT_SECONDS + 30)
+        self._thread.join(timeout=BRIDGE_STOP_TIMEOUT_SECONDS)
+        if self._thread.is_alive():
+            process = self._process
+            if process is not None and process.poll() is None:
+                process.kill()
+            self._thread.join(timeout=15)
+            self.fault = self.fault or "attached bridge did not stop within its budget"
 
     def report(self) -> dict[str, Any]:
         return {
@@ -589,6 +601,7 @@ class AttachedBridge:
                 env=self.environment,
                 cwd=str(self.project.parent),
             )
+            self._process = process
             reader = threading.Thread(target=self._read, args=(process,), daemon=True)
             reader.start()
             try:
@@ -618,10 +631,13 @@ class AttachedBridge:
         )
         deadline = time.monotonic() + BRIDGE_CALL_TIMEOUT_SECONDS
         while True:
+            ## Poll in short slices so a stop request ends a call promptly
+            ## instead of waiting out the full call budget.
+            support.require(not self._stop.is_set(), "attached bridge was stopped")
             remaining = deadline - time.monotonic()
             support.require(remaining > 0, f"attached bridge did not answer {method}")
             try:
-                line = self._lines.get(timeout=remaining)
+                line = self._lines.get(timeout=min(1.0, remaining))
             except queue.Empty:
                 continue
             support.require(line is not None, "attached bridge closed its output")

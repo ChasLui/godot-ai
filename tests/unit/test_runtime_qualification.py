@@ -824,3 +824,33 @@ def test_row_validation_requires_the_attached_bridge_evidence(monkeypatch, tmp_p
         (directory / "row.json").write_bytes(support.canonical(row))
     with pytest.raises(support.ReleaseError, match="attached-bridge evidence"):
         qualification.validate_rows(tmp_path, bindings)
+
+
+def test_attached_bridge_stop_is_prompt_even_when_the_bridge_never_answers(tmp_path):
+    """A silent bridge must not hold the row for the full call budget."""
+    project = tmp_path / "project"
+    project.mkdir()
+    capability_dir = tmp_path / "capabilities"
+    capability_dir.mkdir()
+    (capability_dir / f"http-{runtime.HTTP_PORT}.json").write_text("{}", encoding="utf-8")
+    silent = tmp_path / "silent_bridge.py"
+    silent.write_text(
+        "\n".join(["import sys", "for _line in sys.stdin:", "    pass", ""]),
+        encoding="utf-8",
+    )
+    bridge = runtime.AttachedBridge(
+        [sys.executable, str(silent)],
+        dict(os.environ),
+        project,
+        capability_dir,
+        "4.1.0",
+        "4.1.1",
+        tmp_path / "bridge.log",
+    )
+    started = time.monotonic()
+    with bridge:
+        time.sleep(1.0)
+    assert time.monotonic() - started < runtime.BRIDGE_CALL_TIMEOUT_SECONDS
+    assert not bridge._thread.is_alive()
+    assert bridge._process is not None and bridge._process.poll() is not None
+    assert bridge.served_b is False
