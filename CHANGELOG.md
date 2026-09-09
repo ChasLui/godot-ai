@@ -40,6 +40,10 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
   instance. The attach protocol version, ports and excluded domains are still
   gated exactly. Bridges from 4.0.3 and earlier still refuse a newer server,
   so the first update onto this version needs one last relaunch.
+- Release qualification's real-editor A-to-B update now runs with a real
+  `godot-ai attach` bridge attached through the update, and passes only when
+  that same bridge process serves the updated editor afterwards, so the gate
+  measures the workflow users actually run.
 
 ## 4.0.3 (2026-09-08)
 
