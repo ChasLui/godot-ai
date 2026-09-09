@@ -624,6 +624,83 @@ func test_server_flags_carry_the_startup_report_path() -> void:
 	assert_false(without.has("--startup-report"))
 
 
+func test_launch_failure_carries_the_startup_report() -> void:
+	## A server that refused to start dies before its identity is captured;
+	## the launch-unproven block must still quote why (the WebSocket port
+	## conflict behind two 4.0.3 reports showed only "identity could not be
+	## captured" while the report on disk named the port).
+	var path := OS.get_user_data_dir().path_join("lifecycle_launch_report_test.json")
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(JSON.stringify({
+		"pid": 1, "error": "OSError",
+		"message": "WebSocket port 9500 is already in use by another process.", "hint": "",
+	}))
+	file.close()
+	var manager := _manager({"startup_report": path})
+	manager.start_server()
+	var episode := manager.episode_snapshot()
+	assert_true(manager.complete_effect(episode.id, Lifecycle.PROBE, {"outcome": "free", "baseline_instance_id": ""}))
+	episode = manager.episode_snapshot()
+	assert_true(manager.complete_effect(episode.id, Lifecycle.LAUNCH, {
+		"ok": false, "reason": "launch_unproven",
+		"message": "The launched process identity could not be captured in 58 attempts over 15.0 s.",
+	}))
+	var message := str(manager.get_status_dict().message)
+	assert_true(message.contains("could not be captured"), message)
+	assert_true(message.contains("Server reported: OSError: WebSocket port 9500"), message)
+	DirAccess.remove_absolute(path)
+
+
+func test_probe_blocks_on_a_held_websocket_port_before_launch() -> void:
+	## Both ports bind together; a held WebSocket port would kill the launch at
+	## the server's preflight. The probe names it and the setting instead.
+	var ws_port := McpClientConfigurator.suggest_free_port(41000)
+	var listener := TCPServer.new()
+	assert_eq(listener.listen(ws_port, "127.0.0.1"), OK)
+	var http_port := McpClientConfigurator.suggest_free_port(ws_port + 1)
+	var manager := _manager({"http_port": http_port, "ws_port": ws_port})
+	var result := manager._effect_probe({
+		"http_port": http_port, "expected_version": VERSION,
+		"expected_ws_port": ws_port, "timeout_ms": 200,
+	})
+	listener.stop()
+	assert_eq(str(result.outcome), "blocked")
+	assert_eq(str(result.reason), "ws_occupied")
+	assert_true(str(result.message).contains("WebSocket port %d" % ws_port), result.message)
+	assert_true(str(result.message).contains("godot_ai/ws_port"), result.message)
+	assert_eq(int(result.target.port), ws_port)
+	assert_false(bool(result.target.replaceable))
+	## With the WebSocket port free again the same probe reports free.
+	var free_result := manager._effect_probe({
+		"http_port": http_port, "expected_version": VERSION,
+		"expected_ws_port": ws_port, "timeout_ms": 200,
+	})
+	assert_eq(str(free_result.outcome), "free")
+
+
+func test_occupied_block_names_why_the_record_did_not_authenticate() -> void:
+	## "Held by another process" hid the interesting fact: a godot-ai record
+	## existed for the port and its authenticated probe failed. Say why.
+	var record := {"http": "token", "websocket": "ws", "instance_nonce": "abc"}
+	assert_eq(
+		Lifecycle._record_probe_failure_detail(record, {"reachable": false, "error": "connect_timeout"}),
+		"a godot-ai record for this port exists, but its status probe failed: connect_timeout"
+	)
+	assert_eq(
+		Lifecycle._record_probe_failure_detail(record, {"reachable": true, "name": "godot-ai", "instance_id": "other", "error": ""}),
+		"a godot-ai record for this port exists, but it belongs to a different server instance"
+	)
+	assert_eq(Lifecycle._record_probe_failure_detail({}, {"error": "connect_timeout"}), "", "no record, nothing to explain")
+	var result := Lifecycle._blocked_probe_result(
+		"occupied", 8000, {"error": "connect_timeout"}, false,
+		"a godot-ai record for this port exists, but its status probe failed: connect_timeout"
+	)
+	assert_true(str(result.message).begins_with("Port 8000 is occupied by another process (a godot-ai record"), result.message)
+	assert_false(bool(result.target.replaceable))
+	var plain := Lifecycle._blocked_probe_result("occupied", 8000, {})
+	assert_eq(str(plain.message), "Port 8000 is occupied by another process.")
+
+
 func test_startup_report_summary_quotes_the_server_failure() -> void:
 	var path := OS.get_user_data_dir().path_join("lifecycle_startup_report_test.json")
 	var file := FileAccess.open(path, FileAccess.WRITE)

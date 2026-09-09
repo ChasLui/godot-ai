@@ -68,8 +68,13 @@ in `BLOCKED`.
    bound.
 3. If the authenticated endpoint has the expected version and WS port, adopt
    its transport authority. Adoption deliberately carries no process grant.
-4. If the port is free, launch the configured command with fresh independent
-   HTTP and WebSocket capabilities.
+4. If the HTTP port is free, check the WebSocket port too: the server binds
+   both before it publishes anything, so a held WebSocket port (a server moved
+   off the HTTP port, another editor) blocks the start with `ws_occupied` and
+   names `godot_ai/ws_port` instead of dying at the server's preflight. The
+   dock's port picker moves both ports and keeps whichever one is free. Then
+   launch the configured command with fresh independent HTTP and WebSocket
+   capabilities.
 5. Wait for the new capability record, authenticate status, and bind the live
    process fingerprint before publishing `READY`.
 
@@ -85,8 +90,12 @@ side. The plugin also passes `--startup-report <user://...json>` beside
 fails before publishing its record writes `{pid, error, message, hint}` there
 (a port already in use, an unwritable directory, an import error); the first
 report wins and the record's publication disarms it. The dock appends that
-text to "exited before publishing capabilities" and to the proof timeout. The
-report is quoted, bounded and never interpreted.
+text to "exited before publishing capabilities", to the proof timeout, and to
+a launch whose process identity could not be captured (the process usually
+died refusing to start, and the report says why). The report is quoted,
+bounded and never interpreted. When the HTTP port is held and a capability
+record exists for it but does not authenticate the occupant, the block names
+the reason (a probe timeout, a different instance, a non-godot-ai listener).
 
 The Python server owns the private record and a per-port launch claim. HTTP,
 status, and lease routes require the HTTP bearer. The editor WebSocket stays on

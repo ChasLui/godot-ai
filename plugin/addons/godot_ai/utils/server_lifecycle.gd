@@ -398,7 +398,13 @@ func _complete_probe(result: Dictionary) -> void:
 
 func _complete_launch(result: Dictionary) -> void:
 	if not bool(result.get("ok", false)):
-		_block(str(result.get("reason", "launch_failed")), str(result.get("message", "Server launch failed.")))
+		## The process usually died before its identity could be captured
+		## because it refused to start; it says why in its startup report.
+		_block(
+			str(result.get("reason", "launch_failed")),
+			str(result.get("message", "Server launch failed."))
+			+ startup_report_summary(str(_plan.get("startup_report", ""))),
+		)
 		return
 	var pid := int(result.get("pid", 0))
 	var fingerprint := str(result.get("fingerprint", ""))
@@ -672,15 +678,48 @@ func _effect_probe(payload: Dictionary) -> Dictionary:
 			}
 		return _blocked_probe_result("incompatible", port, live, true)
 	if PortResolver.is_port_in_use(port):
-		var blocked := _blocked_probe_result("occupied", port, live)
+		var detail := _record_probe_failure_detail(capability, live)
+		var blocked := _blocked_probe_result("occupied", port, live, false, detail)
 		var pre_v4 := _untrusted_pre_v4_occupant_version(port, int(payload.timeout_ms))
 		if not pre_v4.is_empty():
 			blocked["message"] = stale_pre_v4_message(port, pre_v4)
 			blocked["target"]["hint"] = STALE_PRE_V4_HINT
 		return blocked
+	## The server binds both ports before it publishes anything. A held
+	## WebSocket port (a server moved off the HTTP port, or another editor)
+	## would kill the launch at preflight; say so now and name the setting.
+	if expected_ws_port > 0 and PortResolver.is_port_in_use(expected_ws_port):
+		return ws_port_blocked_result(expected_ws_port)
 	return {
 		"outcome": "free",
 		"baseline_instance_id": str(capability.get("instance_nonce", "")),
+	}
+
+
+## Why an existing capability record did not authenticate the occupant, so a
+## "held by another process" report can be acted on. Empty when there was no
+## record to try, or when the probe succeeded and the mismatch is elsewhere.
+static func _record_probe_failure_detail(capability: Dictionary, live: Dictionary) -> String:
+	if str(capability.get("http", "")).is_empty():
+		return ""
+	var error := str(live.get("error", "")).strip_edges()
+	if error.is_empty():
+		if str(live.get("name", "")) != "godot-ai":
+			return "a godot-ai record for this port exists, but the listener did not answer as godot-ai"
+		return "a godot-ai record for this port exists, but it belongs to a different server instance"
+	return "a godot-ai record for this port exists, but its status probe failed: %s" % error
+
+
+static func ws_port_blocked_result(ws_port: int) -> Dictionary:
+	return {
+		"outcome": "blocked",
+		"reason": "ws_occupied",
+		"message": (
+			"WebSocket port %d is already in use by another process. "
+			+ "Set `godot_ai/ws_port` in Editor Settings to a free port "
+			+ "(the dock's port picker moves both ports), then reconfigure your AI clients."
+		) % ws_port,
+		"target": {"instance_id": "", "version": "", "port": ws_port, "replaceable": false},
 	}
 
 
@@ -1183,7 +1222,7 @@ static func _transport_from(port: int, ws_port: int, live: Dictionary, capabilit
 
 
 static func _blocked_probe_result(
-	reason: String, port: int, live: Dictionary, allow_replacement := false
+	reason: String, port: int, live: Dictionary, allow_replacement := false, detail := ""
 ) -> Dictionary:
 	var instance_id := str(live.get("instance_id", ""))
 	var version := str(live.get("version", ""))
@@ -1194,6 +1233,8 @@ static func _blocked_probe_result(
 		and not version.is_empty()
 	)
 	var message := "Port %d is occupied by another process." % port
+	if not detail.is_empty():
+		message = "Port %d is occupied by another process (%s)." % [port, detail]
 	if replaceable:
 		message = "Port %d is occupied by godot-ai v%s; choose Replace to continue." % [port, version]
 	return {
