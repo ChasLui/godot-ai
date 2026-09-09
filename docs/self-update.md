@@ -111,8 +111,10 @@ All steps run inside the editor, on the main thread except the download.
     during the update loses server A at the swap. Its bridge then does what
     it always does without a backend: it spawns one, of the old version,
     into the restart window. The restarted editor replaces a godot-ai server
-    at exactly the version it just updated from without asking; any other
-    conflict keeps the dock's explicit Restart Server authority. Every
+    at the version it just updated from, or any older server of its own
+    major version, once and without asking; a newer server, another major,
+    or any other conflict keeps the dock's explicit Restart Server
+    authority. Every
     replacement launches our server before killing the occupant; that server
     waits for the port to free, binds and listens the instant it does, and
     hands that very socket to its HTTP and WebSocket servers, so the port is
@@ -125,11 +127,9 @@ All steps run inside the editor, on the main thread except the download.
     configuration in memory and respawns the old bridge from it until the
     application itself is relaunched. A 4.1.0+ bridge keeps serving a server
     of the same major version and follows the replacement on its own, so the
-    dock says the clients keep working instead. The restarted plugin replaces
-    the superseded server, or any older server of its major version a bridge
-    left on the port, once, probing with a longer timeout than an ordinary
-    start so a backend still settling on the port is not mistaken for a
-    foreign process.
+    dock says the clients keep working instead. That post-update replacement
+    probes with a longer timeout than an ordinary start, so a backend still
+    settling on the port is not mistaken for a foreign process.
 
 ## The v3-to-v4 capsule
 

@@ -1280,9 +1280,11 @@ func _capture_lifecycle_plan() -> Dictionary:
 		"server_command": ClientConfigurator.get_server_command(),
 		"pid_file": ProjectSettings.globalize_path(PortResolver.SERVER_PID_FILE),
 		"startup_report": ProjectSettings.globalize_path(PortResolver.SERVER_STARTUP_REPORT),
+		## The lifecycle is configured before the post-update migration runs,
+		## so the arm's own state is not set yet; the recorded outcome is.
 		"probe_timeout_ms": (
 			POST_UPDATE_PROBE_TIMEOUT_MS
-			if not _post_update_replaced_version.is_empty()
+			if str(_post_update_outcome.get("outcome", "")) == "success"
 			else ServerLifecycleManager.DEFAULT_PROBE_TIMEOUT_MS
 		),
 		"http_port_reserved": WindowsPortReservation.is_port_excluded(http_port),

@@ -444,10 +444,15 @@ func test_post_update_banner_depends_on_whether_bridges_can_follow() -> void:
 func test_post_update_plan_waits_longer_for_the_status_probe() -> void:
 	## An old bridge's backend may still be settling right after the restart;
 	## 800 ms read it as a foreign process and nothing replaced it.
+	## The lifecycle is configured in _enter_tree, before _finish_post_update
+	## arms the replacement, so the plan must read the recorded outcome.
 	var plugin := Plugin.new()
-	plugin._post_update_replaced_version = "4.0.2"
+	plugin._post_update_outcome = {"outcome": "success", "from_version": "4.0.2", "to_version": "4.0.3"}
+	assert_true(plugin._post_update_replaced_version.is_empty(), "the arm is not set yet at configure time")
 	assert_eq(int(plugin._capture_lifecycle_plan().probe_timeout_ms), Plugin.POST_UPDATE_PROBE_TIMEOUT_MS)
-	plugin._post_update_replaced_version = ""
+	plugin._post_update_outcome = {}
+	assert_eq(int(plugin._capture_lifecycle_plan().probe_timeout_ms), Lifecycle.DEFAULT_PROBE_TIMEOUT_MS)
+	plugin._post_update_outcome = {"outcome": "failed", "from_version": "4.0.2"}
 	assert_eq(int(plugin._capture_lifecycle_plan().probe_timeout_ms), Lifecycle.DEFAULT_PROBE_TIMEOUT_MS)
 	plugin._lifecycle = null
 	plugin.free()
