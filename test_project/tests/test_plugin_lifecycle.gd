@@ -395,6 +395,69 @@ func test_capability_pair_is_distinct_for_dev_and_managed_spawns() -> void:
 	assert_ne(pair.http, pair.websocket)
 
 
+func test_post_update_replaces_only_older_servers_of_our_major() -> void:
+	## The arm existed for exactly the version the update replaced; a client
+	## pinned further back leaves an even older server, which is just as much
+	## ours to replace. A newer server or another major never is.
+	var plugin := Plugin.new()
+	var lifecycle := FakeLifecycleActions.new()
+	plugin._lifecycle = lifecycle
+	plugin._post_update_replaced_version = "4.0.2"
+	plugin._post_update_replacements_left = 3
+	var blocked := {
+		"connection_blocked": true, "can_recover_incompatible": true,
+		"episode_state": "BLOCKED", "conflict_port": 8000,
+	}
+	plugin._replace_server_left_by_update(blocked.merged({"conflict_version": "4.0.2"}))
+	assert_eq(lifecycle.recover_calls, 1, "the version the update replaced")
+	plugin._replace_server_left_by_update(blocked.merged({"conflict_version": "4.0.0"}))
+	assert_eq(lifecycle.recover_calls, 2, "an older server of our major")
+	plugin._replace_server_left_by_update(blocked.merged({"conflict_version": "9.9.9"}))
+	plugin._replace_server_left_by_update(blocked.merged({"conflict_version": "3.2.5"}))
+	plugin._replace_server_left_by_update(blocked.merged({"conflict_version": ""}))
+	assert_eq(lifecycle.recover_calls, 2, "never a newer server, another major, or an unnamed one")
+	plugin._replace_server_left_by_update(blocked.merged({"conflict_version": "4.0.1"}))
+	plugin._replace_server_left_by_update(blocked.merged({"conflict_version": "4.0.1"}))
+	assert_eq(lifecycle.recover_calls, 3, "bounded by the replacement limit")
+	plugin._lifecycle = null
+	plugin.free()
+
+
+func test_post_update_banner_depends_on_whether_bridges_can_follow() -> void:
+	var plugin := Plugin.new()
+	plugin._post_update_outcome = {"outcome": "success", "from_version": "4.0.3", "to_version": "4.1.0"}
+	var label := plugin._post_update_complete_label()
+	assert_true(label.begins_with("Quit and relaunch AI clients"), label)
+	plugin._post_update_outcome = {"outcome": "success", "from_version": "4.1.0", "to_version": "4.1.1"}
+	label = plugin._post_update_complete_label()
+	assert_true(label.begins_with("AI clients that were connected during the update keep working on v4.1.1"), label)
+	assert_true(Plugin.attached_bridges_follow("4.1.0", "4.2.0"))
+	assert_true(Plugin.attached_bridges_follow("4.1.0", "4.1.0"))
+	assert_false(Plugin.attached_bridges_follow("4.1.0", "5.0.0"), "a major change needs new bridges")
+	assert_false(Plugin.attached_bridges_follow("4.0.3", "4.1.0"), "a 4.0.x bridge refuses the new server")
+	assert_false(Plugin.attached_bridges_follow("3.2.5", "4.1.0"))
+	assert_false(Plugin.attached_bridges_follow("", "4.1.0"))
+	plugin._lifecycle = null
+	plugin.free()
+
+
+func test_post_update_plan_waits_longer_for_the_status_probe() -> void:
+	## An old bridge's backend may still be settling right after the restart;
+	## 800 ms read it as a foreign process and nothing replaced it.
+	## The lifecycle is configured in _enter_tree, before _finish_post_update
+	## arms the replacement, so the plan must read the recorded outcome.
+	var plugin := Plugin.new()
+	plugin._post_update_outcome = {"outcome": "success", "from_version": "4.0.2", "to_version": "4.0.3"}
+	assert_true(plugin._post_update_replaced_version.is_empty(), "the arm is not set yet at configure time")
+	assert_eq(int(plugin._capture_lifecycle_plan().probe_timeout_ms), Plugin.POST_UPDATE_PROBE_TIMEOUT_MS)
+	plugin._post_update_outcome = {}
+	assert_eq(int(plugin._capture_lifecycle_plan().probe_timeout_ms), Lifecycle.DEFAULT_PROBE_TIMEOUT_MS)
+	plugin._post_update_outcome = {"outcome": "failed", "from_version": "4.0.2"}
+	assert_eq(int(plugin._capture_lifecycle_plan().probe_timeout_ms), Lifecycle.DEFAULT_PROBE_TIMEOUT_MS)
+	plugin._lifecycle = null
+	plugin.free()
+
+
 class _DeferralRecordingPlugin extends Plugin:
 	var finished := 0
 

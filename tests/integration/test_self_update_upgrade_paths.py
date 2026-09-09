@@ -95,12 +95,23 @@ def _isolated_environment(isolated: Path) -> tuple[dict[str, str], Path]:
         "HOME": str(home),
         "USERPROFILE": str(home),
     }
+    ## The editor's own settings (`godot_ai/*` included) live under
+    ## %APPDATA%\Godot on Windows and $XDG_CONFIG_HOME/godot elsewhere; give
+    ## the fixture editor its own so a developer's global settings (a port, MCP
+    ## logging switched off in the dock) cannot change what the row observes.
+    ## macOS derives its path from HOME, which is already isolated above.
     if os.name == "nt":
         local_app_data = isolated / "local-app-data"
         local_app_data.mkdir(exist_ok=True)
         environment["LOCALAPPDATA"] = str(local_app_data)
+        app_data = isolated / "app-data"
+        app_data.mkdir(exist_ok=True)
+        environment["APPDATA"] = str(app_data)
         capability_dir = local_app_data / "godot-ai" / "capabilities"
     else:
+        config_home = isolated / "xdg-config"
+        config_home.mkdir(exist_ok=True)
+        environment["XDG_CONFIG_HOME"] = str(config_home)
         capability_dir = isolated / "capabilities"
         environment[CAPABILITY_DIR_ENV] = str(capability_dir)
     return environment, capability_dir
@@ -519,10 +530,14 @@ def test_signed_update_restarts_into_matching_live_server(
     print(f"server A: {'stopped' if 'MCP | stopped server' in initial_log else 'detached (lease)'}")
     print(f"replacement: {'needed' if replaced_line in restarted_log else 'not needed'}")
     print(f"blocks before the start: {blocks_before_start}")
-    assert (
-        "MCP | AI clients attached before the update must be quit and relaunched "
-        f"to use v{next_version}" in log
-    )
+    ## From 4.1.0 on the attached bridge follows the new server (same major);
+    ## an older bridge refuses it and the user is told to quit and relaunch.
+    base_tuple = tuple(int(part) for part in base_version.split(".")[:3])
+    if base_tuple >= (4, 1, 0):
+        expected_client_line = f"keep working on v{next_version}"
+    else:
+        expected_client_line = f"must be quit and relaunched to use v{next_version}"
+    assert f"MCP | AI clients attached before the update {expected_client_line}" in log
 
     initial_editor, restarted_editor = read_editor_receipts(project)
     assert initial_editor["pid"] != restarted_editor["pid"], (initial_editor, restarted_editor)
