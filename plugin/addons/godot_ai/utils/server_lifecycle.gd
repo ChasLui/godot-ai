@@ -1029,8 +1029,9 @@ func _wait_for_launch_port_wait(
 		return {"ok": true}
 	var deadline := Time.get_ticks_msec() + REPLACEMENT_LAUNCH_READY_TIMEOUT_MS
 	while true:
-		if launch_reached_port_wait(startup_report, launch_id):
-			return {"ok": true}
+		var reached := launch_reached_port_wait(startup_report, launch_id)
+		## The phase counts only from a process still there to hold the
+		## port: one that exited after writing it must not cost the occupant.
 		if PortResolver.process_fingerprint(pid) != fingerprint:
 			return {
 				"ok": false,
@@ -1040,6 +1041,8 @@ func _wait_for_launch_port_wait(
 					+ startup_report_summary(startup_report)
 				),
 			}
+		if reached:
+			return {"ok": true}
 		if Time.get_ticks_msec() >= deadline:
 			return {
 				"ok": false,
