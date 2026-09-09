@@ -777,22 +777,31 @@ func test_stale_pre_v4_block_is_worded_but_never_replaceable() -> void:
 	assert_eq(manager.get_status_dict().blocked_hint, Lifecycle.STALE_PRE_V4_HINT)
 
 
-func test_launch_reached_port_wait_reads_only_the_wait_phase() -> void:
+func test_launch_reached_port_wait_reads_only_this_launch_s_wait_phase() -> void:
 	var path := OS.get_user_data_dir().path_join("lifecycle_port_wait_phase_test.json")
-	assert_false(Lifecycle.launch_reached_port_wait(path), "no report yet")
+	assert_false(Lifecycle.launch_reached_port_wait(path, "launch-1"), "no report yet")
 	var file := FileAccess.open(path, FileAccess.WRITE)
-	file.store_string('{"pid": 4242, "phase": "waiting_for_port", "port": 8000, "label": "HTTP"}')
+	file.store_string('{"pid": 4242, "phase": "waiting_for_port", "port": 8000, "label": "HTTP", "launch_id": "launch-1"}')
 	file.close()
-	assert_true(Lifecycle.launch_reached_port_wait(path))
+	assert_true(Lifecycle.launch_reached_port_wait(path, "launch-1"))
+	assert_false(
+		Lifecycle.launch_reached_port_wait(path, "launch-2"),
+		"a stale report from an earlier launch must never pass for this one"
+	)
+	assert_false(Lifecycle.launch_reached_port_wait(path, ""), "an unnamed launch matches nothing")
 	assert_eq(Lifecycle.startup_report_summary(path), "", "a phase is not a failure to quote")
 	file = FileAccess.open(path, FileAccess.WRITE)
-	file.store_string('{"pid": 4242, "error": "OSError", "message": "port 8000 is already in use"}')
+	file.store_string('{"pid": 4242, "phase": "waiting_for_port", "port": 8000}')
 	file.close()
-	assert_false(Lifecycle.launch_reached_port_wait(path), "the failure that replaced the phase")
+	assert_false(Lifecycle.launch_reached_port_wait(path, "launch-1"), "a report without a launch id")
+	file = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string('{"pid": 4242, "error": "OSError", "message": "port 8000 is already in use", "launch_id": "launch-1"}')
+	file.close()
+	assert_false(Lifecycle.launch_reached_port_wait(path, "launch-1"), "the failure that replaced the phase")
 	assert_true(Lifecycle.startup_report_summary(path).contains("already in use"))
 	file = FileAccess.open(path, FileAccess.WRITE)
 	file.store_string("not json")
 	file.close()
-	assert_false(Lifecycle.launch_reached_port_wait(path))
+	assert_false(Lifecycle.launch_reached_port_wait(path, "launch-1"))
 	DirAccess.remove_absolute(path)
-	assert_false(Lifecycle.launch_reached_port_wait(""))
+	assert_false(Lifecycle.launch_reached_port_wait("", "launch-1"))

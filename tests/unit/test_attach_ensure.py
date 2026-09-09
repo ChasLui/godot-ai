@@ -1193,6 +1193,8 @@ def test_backend_spawn_environment_removes_parent_process_markers(
 ) -> None:
     monkeypatch.setenv(PLUGIN_SPAWNED_ENV, "1")
     monkeypatch.setenv("GODOT_AI_OWNER_PID", "123")
+    monkeypatch.setenv("GODOT_AI_WAIT_FOR_PORT_MS", "15000")
+    monkeypatch.setenv("GODOT_AI_LAUNCH_ID", "launch-3")
     monkeypatch.setenv("GODOT_AI_WS_TOKEN", "secret")
     monkeypatch.setenv(DEV_TRANSPORT_ENV, "streamable-http")
     monkeypatch.setenv("GODOT_AI_UNRELATED", "preserved")
@@ -1203,6 +1205,8 @@ def test_backend_spawn_environment_removes_parent_process_markers(
     assert env["GODOT_AI_UNRELATED"] == "preserved"
     assert PLUGIN_SPAWNED_ENV not in env
     assert "GODOT_AI_OWNER_PID" not in env
+    assert "GODOT_AI_WAIT_FOR_PORT_MS" not in env
+    assert "GODOT_AI_LAUNCH_ID" not in env
     assert env["GODOT_AI_HTTP_CAPABILITY"] == TEST_TRANSPORT_CAPABILITIES.http
     assert env["GODOT_AI_WS_TOKEN"] == TEST_TRANSPORT_CAPABILITIES.websocket
     assert DEV_TRANSPORT_ENV not in env

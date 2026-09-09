@@ -544,6 +544,10 @@ def _backend_spawn_env(capabilities: LaunchCapabilities) -> dict[str, str]:
     for inherited_process_key in (
         PLUGIN_SPAWNED_ENV,
         "GODOT_AI_OWNER_PID",
+        # A plugin launch's port-wait and launch name are that launch's: an
+        # attach-owned backend fails fast on a held port and reports no phase.
+        "GODOT_AI_WAIT_FOR_PORT_MS",
+        "GODOT_AI_LAUNCH_ID",
         HTTP_CAPABILITY_ENV,
         WS_CAPABILITY_ENV,
         # A bridge launched from a reload worker must not make its independent

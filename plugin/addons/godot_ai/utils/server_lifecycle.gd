@@ -769,6 +769,19 @@ func _effect_launch(payload: Dictionary) -> Dictionary:
 	var startup_report := str(payload.get("startup_report", ""))
 	if not startup_report.is_empty() and FileAccess.file_exists(startup_report):
 		DirAccess.remove_absolute(startup_report)
+		## A report this launch could not clear would be read as this
+		## launch's: a stale "waiting_for_port" phase would let a replacement
+		## kill its occupant before the new server holds the port.
+		if FileAccess.file_exists(startup_report):
+			return {
+				"ok": false,
+				"reason": "stale_startup_report",
+				"message": "A previous server's startup report could not be removed: %s" % startup_report,
+			}
+	## Names this launch in what the server reports, so a phase read from the
+	## report is never another launch's.
+	var launch_id := "%d-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec(), randi()]
+	environment["GODOT_AI_LAUNCH_ID"] = launch_id
 	var spawned := spawn_capability_process(str(server_command[0]), args, environment)
 	var pid := int(spawned.pid)
 	if pid <= 1:
@@ -797,6 +810,7 @@ func _effect_launch(payload: Dictionary) -> Dictionary:
 		"http_capability": spawned.http,
 		"ws_capability": spawned.websocket,
 		"baseline_instance_id": str(payload.get("baseline_instance_id", "")),
+		"launch_id": launch_id,
 	}
 
 
@@ -971,7 +985,10 @@ func _effect_replace(payload: Dictionary) -> Dictionary:
 		## that spends seconds getting there (uvx installing the new version)
 		## would otherwise leave the port free for a bridge to spawn into.
 		var ready := _wait_for_launch_port_wait(
-			str(launch_plan.get("startup_report", "")), int(launch.pid), str(launch.fingerprint)
+			str(launch_plan.get("startup_report", "")),
+			str(launch.get("launch_id", "")),
+			int(launch.pid),
+			str(launch.fingerprint),
 		)
 		if not bool(ready.get("ok", false)):
 			PortResolver.kill_exact_processes(
@@ -1005,12 +1022,14 @@ func _effect_replace(payload: Dictionary) -> Dictionary:
 ## Poll the launched server's startup report until it says the port wait is
 ## running, the process is gone, or the budget is spent. No report path
 ## (a plan without one) keeps the old ordering: kill straight away.
-func _wait_for_launch_port_wait(startup_report: String, pid: int, fingerprint: String) -> Dictionary:
+func _wait_for_launch_port_wait(
+	startup_report: String, launch_id: String, pid: int, fingerprint: String
+) -> Dictionary:
 	if startup_report.is_empty():
 		return {"ok": true}
 	var deadline := Time.get_ticks_msec() + REPLACEMENT_LAUNCH_READY_TIMEOUT_MS
 	while true:
-		if launch_reached_port_wait(startup_report):
+		if launch_reached_port_wait(startup_report, launch_id):
 			return {"ok": true}
 		if PortResolver.process_fingerprint(pid) != fingerprint:
 			return {
@@ -1031,11 +1050,12 @@ func _wait_for_launch_port_wait(startup_report: String, pid: int, fingerprint: S
 	return {"ok": true}
 
 
-## Whether the startup report records the server at its port wait (the
-## phase it writes before its first bind attempt when the plugin asked it to
-## wait for the port). A failure written later replaces the phase.
-static func launch_reached_port_wait(startup_report: String) -> bool:
-	if startup_report.is_empty() or not FileAccess.file_exists(startup_report):
+## Whether the startup report records the server of `launch_id` at its port
+## wait (the phase it writes before its first bind attempt when the plugin
+## asked it to wait for the port). A failure written later replaces the
+## phase; a report naming another launch, or none, is never this launch's.
+static func launch_reached_port_wait(startup_report: String, launch_id: String) -> bool:
+	if startup_report.is_empty() or launch_id.is_empty() or not FileAccess.file_exists(startup_report):
 		return false
 	var file := FileAccess.open(startup_report, FileAccess.READ)
 	if file == null:
@@ -1047,7 +1067,10 @@ static func launch_reached_port_wait(startup_report: String) -> bool:
 	var parsed: Variant = JSON.parse_string(raw)
 	if not (parsed is Dictionary):
 		return false
-	return str(parsed.get("phase", "")) == STARTUP_PHASE_WAITING_FOR_PORT
+	return (
+		str(parsed.get("phase", "")) == STARTUP_PHASE_WAITING_FOR_PORT
+		and str(parsed.get("launch_id", "")) == launch_id
+	)
 
 
 func _effect_stop(payload: Dictionary) -> Dictionary:
