@@ -228,10 +228,14 @@ def test_preflight_reports_the_port_wait_phase_while_the_port_is_still_held(
     try:
         worker.start()
         deadline = time.monotonic() + 2.0
-        while not report.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
+        phase: dict[str, object] | None = None
+        while phase is None and time.monotonic() < deadline:
+            try:
+                phase = json.loads(report.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                time.sleep(0.01)
         assert worker.is_alive(), outcome
-        phase = json.loads(report.read_text(encoding="utf-8"))
+        assert phase is not None, "no phase record while the port was held"
         assert phase["phase"] == STARTUP_PHASE_WAITING_FOR_PORT
         assert phase["port"] == port
         assert phase["launch_id"] == "launch-7"

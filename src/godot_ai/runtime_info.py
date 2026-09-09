@@ -98,9 +98,12 @@ def report_startup_phase(phase: str, **fields: object) -> Path | None:
         return None
     payload: dict[str, object] = {"pid": os.getpid(), "phase": phase}
     payload.update(fields)
+    ## Whole or absent: the plugin polls this file while we write it.
+    staging = path.with_name(path.name + ".phase")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=True) + "\n", encoding="utf-8")
+        staging.write_text(json.dumps(payload, ensure_ascii=True) + "\n", encoding="utf-8")
+        os.replace(staging, path)
     except OSError:
         return None
     return path
