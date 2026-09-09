@@ -716,7 +716,10 @@ class BackendEnsurer:
         return status
 
 
-_VERSION_MAJOR = re.compile(r"^(\d+)\.\d+\.\d+(?:[.+-]|$)")
+## A complete `major.minor.patch`, optionally followed by one separator and a
+## non-empty suffix (`4.0.3+local.1`, `4.1.0-rc1`); a dangling separator or
+## any other shape is not a version and falls back to exact equality.
+_VERSION_MAJOR = re.compile(r"^(\d+)\.\d+\.\d+(?:$|[.+-][0-9A-Za-z][0-9A-Za-z.+-]*$)")
 
 
 def compatible_server_version(running: str, required: str) -> bool:

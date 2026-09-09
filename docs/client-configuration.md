@@ -324,10 +324,13 @@ header works only until the next server start.
    a VPN such as Tailscale; do not expose the editor port itself.
 
 The bridge launched this way authenticates itself on every start, so a server
-restart needs no manual step. A Godot AI **update** does: the dock repins
-owned entries in config files on the editor machine but cannot see a file on
-another machine, so refresh the SSH command's version pin from **Run this
-manually** after each update. The Settings tab's **Allow remote hosts (CIDR)**
+restart needs no manual step, and neither does a Godot AI **update** within
+the same major version: a bridge at 4.1.0 or newer keeps serving the updated
+server. A major-version update does, and so does the one-time move off a
+bridge at 4.0.3 or earlier: the dock repins owned entries in config files on
+the editor machine but cannot see a file on another machine, so refresh the
+SSH command's version pin from **Run this manually** then. The Settings tab's
+**Allow remote hosts (CIDR)**
 allowlist is not needed for this recipe; it widens the HTTP bind for peers in
 the named ranges, and those peers still need the bearer.
 
