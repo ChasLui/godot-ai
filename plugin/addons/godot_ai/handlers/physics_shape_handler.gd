@@ -142,7 +142,7 @@ static func _validate_generate_request(params: Dictionary) -> Dictionary:
 			)
 		if seen.has(raw_path):
 			return ErrorCodes.make(
-				ErrorCodes.INVALID_PARAMS,
+				ErrorCodes.VALUE_OUT_OF_RANGE,
 				"paths lists %s twice (entries %d and %d); each mesh gets one collider"
 				% [raw_path, int(seen[raw_path]), index],
 			)
@@ -172,7 +172,7 @@ static func _plan_generate_mesh(
 	var node: Node = resolved.node
 	if node == scene_root:
 		return ErrorCodes.make(
-			ErrorCodes.INVALID_PARAMS,
+			ErrorCodes.VALUE_OUT_OF_RANGE,
 			"%s is the scene root — a sibling body needs a parent inside the scene" % mesh_path
 		)
 	if not node is MeshInstance3D:
@@ -189,14 +189,14 @@ static func _plan_generate_mesh(
 		)
 	if mesh.mesh == null:
 		return ErrorCodes.make(
-			ErrorCodes.INVALID_PARAMS,
+			ErrorCodes.RESOURCE_NOT_FOUND,
 			"MeshInstance3D at %s has no mesh resource — there are no bounds to fit" % mesh_path
 		)
 	var collider_name := mesh.name + _GENERATE_COLLIDER_SUFFIX
 	var existing := parent.get_node_or_null(NodePath(collider_name))
 	if existing != null:
 		return ErrorCodes.make(
-			ErrorCodes.INVALID_PARAMS,
+			ErrorCodes.VALUE_OUT_OF_RANGE,
 			"MeshInstance3D at %s already has a collider sibling at %s — remove or rename it first"
 			% [mesh_path, McpScenePath.from_node(existing, scene_root)]
 		)
@@ -225,7 +225,7 @@ static func _plan_generate_mesh(
 	var bounds: AABB = mesh_to_body * mesh.get_aabb()
 	if bounds.size.x <= 0.0 or bounds.size.y <= 0.0 or bounds.size.z <= 0.0:
 		return ErrorCodes.make(
-			ErrorCodes.INVALID_PARAMS,
+			ErrorCodes.VALUE_OUT_OF_RANGE,
 			"MeshInstance3D at %s has empty bounds %s — nothing to fit" % [mesh_path, bounds]
 		)
 	return {"plan": {

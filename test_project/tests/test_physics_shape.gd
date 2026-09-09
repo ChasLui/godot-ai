@@ -844,7 +844,7 @@ func test_generate_already_applied_batch_is_one_undo_redo_action() -> void:
 	var entries: Array[Dictionary] = []
 	for mesh in [first, second]:
 		var path := McpScenePath.from_node(mesh, scene_root)
-		var planned := PhysicsShapeHandler._plan_generate_mesh(path, "")
+		var planned := PhysicsShapeHandler._plan_generate_mesh(path, "", scene_root, "box")
 		assert_has_key(planned, "plan")
 		var entry := PhysicsShapeHandler._create_generated_entry(planned.plan, "box", "static")
 		entry.parent.add_child(entry.body, true)
@@ -916,6 +916,209 @@ func test_generate_rejects_empty_non_array_and_non_mesh_paths() -> void:
 	var wrong_type := _handler.generate({"paths": [McpScenePath.from_node(plain, scene_root)]})
 	assert_is_error(wrong_type, ErrorCodes.WRONG_TYPE)
 	_remove_node(plain)
+
+
+class _CapturingConnection:
+	extends McpConnection
+	var captured: Array = []
+
+	func send_deferred_response(request_id: String, payload: Dictionary) -> void:
+		captured.append({"request_id": request_id, "payload": payload})
+
+
+class _GoneDispatcher:
+	extends RefCounted
+
+	func has_pending_deferred_response(_request_id: String) -> bool:
+		return false
+
+
+func _generate_job_for(paths: Array, connection = null) -> Dictionary:
+	var validated := PhysicsShapeHandler._validate_generate_request({"paths": paths})
+	assert_has_key(validated, "data")
+	return PhysicsShapeHandler._generate_job(validated, _undo_redo, connection, "rid-generate")
+
+
+func test_generate_rejects_the_scene_root() -> void:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		skip("No scene root")
+		return
+	var result := _handler.generate({"paths": [McpScenePath.from_node(scene_root, scene_root)]})
+	assert_is_error(result, ErrorCodes.VALUE_OUT_OF_RANGE)
+	assert_contains(result.error.message, "scene root")
+
+
+func test_generate_rejects_a_mesh_without_a_mesh_resource() -> void:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		skip("No scene root")
+		return
+	var empty := MeshInstance3D.new()
+	empty.name = "GenerateNoMesh"
+	scene_root.add_child(empty)
+	empty.set_owner(scene_root)
+	var result := _handler.generate({"paths": [McpScenePath.from_node(empty, scene_root)]})
+	assert_is_error(result, ErrorCodes.RESOURCE_NOT_FOUND)
+	assert_contains(result.error.message, "no mesh resource")
+	assert_true(_find_named_child(scene_root, "GenerateNoMeshCollider") == null)
+	_remove_node(empty)
+
+
+func test_generate_rejects_duplicate_paths_and_existing_colliders() -> void:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		skip("No scene root")
+		return
+	var mesh := _add_generate_mesh("GenerateOnce", Vector3.ONE)
+	var path := McpScenePath.from_node(mesh, scene_root)
+	var duplicate := _handler.generate({"paths": [path, path]})
+	assert_is_error(duplicate, ErrorCodes.VALUE_OUT_OF_RANGE)
+	assert_contains(duplicate.error.message, "twice")
+	assert_true(_find_named_child(scene_root, "GenerateOnceCollider") == null)
+	var first := _handler.generate({"paths": [path]})
+	assert_has_key(first, "data")
+	## A retry after a lost reply must not stack a second collider.
+	var again := _handler.generate({"paths": [path]})
+	assert_is_error(again, ErrorCodes.VALUE_OUT_OF_RANGE)
+	assert_contains(again.error.message, "already has a collider sibling")
+	var colliders := 0
+	for child in scene_root.get_children():
+		if str(child.name).begins_with("GenerateOnceCollider"):
+			colliders += 1
+	assert_eq(colliders, 1, "the retry must leave exactly one collider")
+	_remove_node(_find_named_child(scene_root, "GenerateOnceCollider"))
+	_remove_node(mesh)
+
+
+func test_generate_refuses_non_uniform_parent_scale_for_round_shapes() -> void:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		skip("No scene root")
+		return
+	var parent := Node3D.new()
+	parent.name = "GenerateScaledParent"
+	parent.scale = Vector3(1, 2, 1)
+	scene_root.add_child(parent)
+	parent.set_owner(scene_root)
+	var mesh := MeshInstance3D.new()
+	mesh.name = "GenerateUnderScaledParent"
+	var box := BoxMesh.new()
+	box.size = Vector3(2, 2, 2)
+	mesh.mesh = box
+	parent.add_child(mesh)
+	mesh.set_owner(scene_root)
+	var path := McpScenePath.from_node(mesh, scene_root)
+	var sphere := _handler.generate({"paths": [path], "shape_type": "sphere"})
+	assert_is_error(sphere, ErrorCodes.VALUE_OUT_OF_RANGE)
+	assert_contains(sphere.error.message, "non-uniformly")
+	assert_true(_find_named_child(parent, "GenerateUnderScaledParentCollider") == null)
+	## A box inherits the parent's scale exactly like the mesh does.
+	var boxed := _handler.generate({"paths": [path], "shape_type": "box"})
+	assert_has_key(boxed, "data")
+	_remove_node(_find_named_child(parent, "GenerateUnderScaledParentCollider"))
+	## A uniform parent scale keeps a sphere a sphere.
+	parent.scale = Vector3(2, 2, 2)
+	var uniform := _handler.generate({"paths": [path], "shape_type": "sphere"})
+	assert_has_key(uniform, "data")
+	_remove_node(parent)
+
+
+func test_generate_job_applies_one_item_per_step_and_replies_once() -> void:
+	## The production path: a deferred request advances one editor frame at a
+	## time. A zero budget makes each step do exactly one item.
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		skip("No scene root")
+		return
+	var first := _add_generate_mesh("GenerateJobA", Vector3.ONE)
+	var second := _add_generate_mesh("GenerateJobB", Vector3.ONE)
+	var connection := _CapturingConnection.new()
+	var job := _generate_job_for([
+		McpScenePath.from_node(first, scene_root), McpScenePath.from_node(second, scene_root),
+	], connection)
+	assert_false(PhysicsShapeHandler._generate_step(job, 0), "plan A")
+	assert_eq(job.plans.size(), 1)
+	assert_false(PhysicsShapeHandler._generate_step(job, 0), "plan B")
+	assert_eq(job.plans.size(), 2)
+	assert_true(_find_named_child(scene_root, "GenerateJobACollider") == null, "planning mutates nothing")
+	assert_false(PhysicsShapeHandler._generate_step(job, 0), "apply A")
+	assert_true(_find_named_child(scene_root, "GenerateJobACollider") != null)
+	assert_true(_find_named_child(scene_root, "GenerateJobBCollider") == null)
+	assert_true(PhysicsShapeHandler._generate_step(job, 0), "apply B and commit")
+	assert_has_key(job.result, "data")
+	assert_eq(job.result.data.created.size(), 2)
+	assert_true(PhysicsShapeHandler._generate_step(job, 0), "a finished job stays finished")
+	var body_a := _find_named_child(scene_root, "GenerateJobACollider")
+	var body_b := _find_named_child(scene_root, "GenerateJobBCollider")
+	assert_true(editor_undo(_undo_redo), "the deferred batch is one undo action")
+	assert_true(body_a.get_parent() == null and body_b.get_parent() == null)
+	assert_true(editor_redo(_undo_redo))
+	assert_eq(body_a.get_parent(), scene_root)
+	_remove_node(body_a)
+	_remove_node(body_b)
+	_remove_node(first)
+	_remove_node(second)
+	connection.free()
+
+
+func test_generate_job_revalidates_each_mesh_when_it_is_applied() -> void:
+	## Plan-time state is never applied blindly: a mesh removed, moved or
+	## reparented between planning and applying fails the whole request and
+	## rolls back the bodies already added.
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		skip("No scene root")
+		return
+	var kept := _add_generate_mesh("GenerateStaleKept", Vector3.ONE)
+	var moved := _add_generate_mesh("GenerateStaleMoved", Vector3.ONE)
+	var connection := _CapturingConnection.new()
+	var job := _generate_job_for([
+		McpScenePath.from_node(kept, scene_root), McpScenePath.from_node(moved, scene_root),
+	], connection)
+	PhysicsShapeHandler._generate_step(job, 0)
+	PhysicsShapeHandler._generate_step(job, 0)
+	assert_eq(str(job.phase), "apply")
+	moved.position = Vector3(1, 2, 3)
+	assert_false(PhysicsShapeHandler._generate_step(job, 0), "apply the untouched mesh")
+	assert_true(_find_named_child(scene_root, "GenerateStaleKeptCollider") != null)
+	assert_true(PhysicsShapeHandler._generate_step(job, 0), "the moved mesh fails the request")
+	assert_is_error(job.result, ErrorCodes.EDITED_SCENE_MISMATCH)
+	assert_contains(job.result.error.message, "moved")
+	assert_true(_find_named_child(scene_root, "GenerateStaleKeptCollider") == null, "rolled back")
+	assert_true(_find_named_child(scene_root, "GenerateStaleMovedCollider") == null)
+
+	var removed := _add_generate_mesh("GenerateStaleRemoved", Vector3.ONE)
+	var removed_job := _generate_job_for([
+		McpScenePath.from_node(kept, scene_root), McpScenePath.from_node(removed, scene_root),
+	], connection)
+	PhysicsShapeHandler._generate_step(removed_job, 0)
+	PhysicsShapeHandler._generate_step(removed_job, 0)
+	_remove_node(removed)
+	PhysicsShapeHandler._generate_step(removed_job, 0)
+	assert_true(PhysicsShapeHandler._generate_step(removed_job, 0))
+	assert_is_error(removed_job.result, ErrorCodes.NODE_NOT_FOUND)
+	assert_true(_find_named_child(scene_root, "GenerateStaleKeptCollider") == null, "rolled back")
+	_remove_node(kept)
+	_remove_node(moved)
+	connection.free()
+
+
+func test_generate_job_abandoned_by_the_dispatcher_leaves_nothing_behind() -> void:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		skip("No scene root")
+		return
+	var mesh := _add_generate_mesh("GenerateAbandoned", Vector3.ONE)
+	var connection := _CapturingConnection.new()
+	var job := _generate_job_for([McpScenePath.from_node(mesh, scene_root)], connection)
+	PhysicsShapeHandler._generate_step(job, 0)
+	connection.dispatcher = _GoneDispatcher.new()
+	assert_true(PhysicsShapeHandler._generate_step(job, 0), "an abandoned request ends")
+	assert_true(job.result.is_empty(), "nothing is answered")
+	assert_true(_find_named_child(scene_root, "GenerateAbandonedCollider") == null)
+	_remove_node(mesh)
+	connection.free()
 
 
 func test_generate_bounds_direct_and_total_batch_sizes() -> void:
