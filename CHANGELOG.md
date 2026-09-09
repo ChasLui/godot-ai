@@ -21,6 +21,17 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
   that port did not authenticate the occupant (a probe timeout, a different
   instance, a non-godot-ai listener), so the report is actionable.
 
+### Changed
+
+- The `godot-ai attach` bridge keeps serving a server of the same **major**
+  version instead of requiring the exact package version. Updating the plugin
+  no longer requires quitting and relaunching every attached AI client: the
+  restarted editor's server is one patch or minor ahead of the client's bridge
+  pin, the bridge re-validates on every request and follows the new server
+  instance. The attach protocol version, ports and excluded domains are still
+  gated exactly. Bridges from 4.0.3 and earlier still refuse a newer server,
+  so the first update onto this version needs one last relaunch.
+
 ## 4.0.3 (2026-09-08)
 
 Stabilizes the v4 line on Windows and Linux after the 3.x crossing: the

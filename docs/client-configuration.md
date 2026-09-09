@@ -312,8 +312,9 @@ header works only until the next server start.
    (`ssh -T you@<host> true`), check the host key fingerprint, and accept it so
    `known_hosts` carries it; do not turn off host-key checking to skip that
    step. Use the dock's command verbatim in place of the example; the version
-   pin must equal the installed plugin's version or the bridge refuses the
-   server.
+   pin must share the installed plugin's major version (4.x with a 4.x
+   plugin) or the bridge refuses the server. Within a major version a running
+   bridge keeps serving across plugin updates.
 4. **Host name:** Docker Desktop on Windows or macOS resolves
    `host.docker.internal` to the host; Docker Engine on Linux needs
    `--add-host=host.docker.internal:host-gateway` on the container. From WSL2
