@@ -148,15 +148,6 @@ var _post_update_stale_reprobes_left := POST_UPDATE_STALE_REPROBE_LIMIT
 ## may not be the last; a few are allowed before the dock takes over.
 const POST_UPDATE_REPLACEMENT_LIMIT := 3
 var _post_update_replacements_left := POST_UPDATE_REPLACEMENT_LIMIT
-## Right after an update the old bridge's backend may still be settling on
-## the port; a status probe that gives up in 800 ms reads it as a foreign
-## process and nothing replaces it. The post-update probe waits longer.
-const POST_UPDATE_PROBE_TIMEOUT_MS := 3000
-## First version whose attach bridge keeps serving a server of the same
-## major version (#1024). A client attached through an update from an older
-## version still runs a bridge that refuses the new server and must be quit
-## and relaunched; from this version on it follows the new server itself.
-const FIRST_BRIDGE_TOLERANT_VERSION := "4.0.4"
 ## Set once the live tree has been renamed; the lock then belongs to the restart.
 var _update_swapped := false
 var _post_update_action := ""
@@ -860,6 +851,7 @@ func _present_post_update_barrier_failure(error: String) -> void:
 		_dock.present_update_state({
 			"install_in_flight": false,
 			"button_text": "Retry client migration",
+			"status_text": "Installed — client migration failed",
 			"button_disabled": false,
 			"label_text": "Server startup is blocked: %s" % error,
 			"banner_visible": true,
@@ -890,8 +882,8 @@ func _finish_post_update() -> void:
 	_post_update_stale_reprobes_left = POST_UPDATE_STALE_REPROBE_LIMIT
 	_post_update_replacements_left = POST_UPDATE_REPLACEMENT_LIMIT
 	var to_version := str(_post_update_outcome.get("to_version", ""))
-	if attached_bridges_follow(_post_update_replaced_version, to_version):
-		print("MCP | AI clients attached before the update keep working on v%s" % to_version)
+	if McpServerVersionCheck.attached_bridges_follow(_post_update_replaced_version, to_version):
+		print("MCP | AI clients using v%s can reconnect to v%s; relaunch clients still using older versions" % [_post_update_replaced_version, to_version])
 	else:
 		print(
 			"MCP | AI clients attached before the update must be quit and relaunched to use v%s"
@@ -922,7 +914,7 @@ func _present_post_update_complete() -> void:
 	if _dock != null:
 		_dock.present_update_state({
 			"install_in_flight": false,
-			"status_text": "Update complete",
+			"status_text": "Godot AI installed" if _post_update_deferred.is_empty() else "Installed — client setup needed",
 			"button_disabled": true,
 			"label_text": _post_update_complete_label(),
 			"banner_visible": true,
@@ -931,24 +923,12 @@ func _present_post_update_complete() -> void:
 		})
 
 
-## Whether a bridge a client attached at `from_version` keeps serving the
-## server at `to_version` (#1024: same major version, from 4.0.4 on).
-static func attached_bridges_follow(from_version: String, to_version: String) -> bool:
-	var from_tuple := McpServerVersionCheck.version_tuple(from_version)
-	var to_tuple := McpServerVersionCheck.version_tuple(to_version)
-	if from_tuple.is_empty() or to_tuple.is_empty():
-		return false
-	if int(from_tuple[0]) != int(to_tuple[0]):
-		return false
-	var floor_tuple := McpServerVersionCheck.version_tuple(FIRST_BRIDGE_TOLERANT_VERSION)
-	return McpServerVersionCheck.compare(from_tuple, floor_tuple) >= 0
-
-
 func _post_update_complete_label() -> String:
 	var to_version := str(_post_update_outcome.get("to_version", ""))
+	var from_version := str(_post_update_outcome.get("from_version", ""))
 	var text := (
-		"AI clients that were connected during the update keep working on v%s." % to_version
-		if attached_bridges_follow(str(_post_update_outcome.get("from_version", "")), to_version)
+		"AI clients already using v%s can reconnect to v%s without restarting. Relaunch clients still using an older version." % [from_version, to_version]
+		if McpServerVersionCheck.attached_bridges_follow(from_version, to_version)
 		else "Quit and relaunch AI clients that were connected during the update so they use v%s."
 		% to_version
 	)
@@ -1283,13 +1263,6 @@ func _capture_lifecycle_plan() -> Dictionary:
 		"server_command": ClientConfigurator.get_server_command(),
 		"pid_file": ProjectSettings.globalize_path(PortResolver.SERVER_PID_FILE),
 		"startup_report": ProjectSettings.globalize_path(PortResolver.SERVER_STARTUP_REPORT),
-		## The lifecycle is configured before the post-update migration runs,
-		## so the arm's own state is not set yet; the recorded outcome is.
-		"probe_timeout_ms": (
-			POST_UPDATE_PROBE_TIMEOUT_MS
-			if str(_post_update_outcome.get("outcome", "")) == "success"
-			else ServerLifecycleManager.DEFAULT_PROBE_TIMEOUT_MS
-		),
 		"http_port_reserved": WindowsPortReservation.is_port_excluded(http_port),
 		"excluded_domains": str(policy.get("excluded_domains", "")),
 		"allow_hosts": str(policy.get("allow_hosts", "")),

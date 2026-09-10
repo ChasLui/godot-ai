@@ -381,12 +381,23 @@ func test_directory_write_problem_names_the_directory_and_the_repair() -> void:
 	var directory := blocker.path_join("capabilities")
 	var problem := McpTransportCapability.directory_write_problem_for(directory)
 	assert_true(problem.contains(directory), "names the directory: %s" % problem)
-	assert_true(
-		problem.contains("Remove-Item -Recurse -Force \"%s\"" % blocker),
-		"names the godot-ai root to remove: %s" % problem
-	)
+	assert_false(problem.contains("Remove-Item"), "never suggests deleting a named ancestor")
+	assert_true(problem.contains("permissions"), "explains how to restore access")
 	assert_true(problem.contains("elevated"), "explains the cause: %s" % problem)
 	DirAccess.remove_absolute(blocker)
+
+
+func test_windows_repair_hint_preserves_path_and_detail_without_deletion_advice() -> void:
+	for directory in [
+		"C:/workspace/godot-ai/.worktrees/project/custom/runtime",
+		"C:/custom/runtime",
+		"C:/Users/user/AppData/Local/godot-ai/capabilities",
+	]:
+		var problem := McpTransportCapability.windows_repair_hint(directory, "permission-detail")
+		assert_true(problem.contains(directory), "names the actual inaccessible directory")
+		assert_true(problem.contains("permission-detail"), "retains the underlying error detail")
+		assert_true(problem.contains("permissions"), "offers directory-specific access guidance")
+		assert_false(problem.contains("Remove-Item"), "managed, repository and custom paths are non-destructive")
 
 
 func test_directory_write_problem_is_windows_only() -> void:

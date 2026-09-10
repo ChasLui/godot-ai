@@ -1245,7 +1245,9 @@ async def test_unanswered_listener_names_an_inaccessible_capability_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#988: a bound port whose record this account cannot read is not a foreign process."""
-    monkeypatch.setattr(ensure_module, "directory_access_error", lambda: "run Remove-Item")
+    monkeypatch.setattr(
+        ensure_module, "directory_access_error", lambda: "check directory permissions"
+    )
 
     async def probe(_port: int, *_args) -> BackendStatus | None:
         return None
@@ -1263,7 +1265,7 @@ async def test_unanswered_listener_names_an_inaccessible_capability_directory(
         await ensurer.ensure()
 
     assert exc_info.value.code == "CAPABILITY_DIR_INACCESSIBLE"
-    assert exc_info.value.hint == "run Remove-Item"
+    assert exc_info.value.hint == "check directory permissions"
     assert exc_info.value.exit_code == 98
 
 
@@ -1312,7 +1314,7 @@ def test_user_runtime_dir_windows_permission_error_carries_the_repair_hint(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows repair hint")
-def test_default_runtime_dir_permission_error_carries_the_destructive_repair(
+def test_default_runtime_dir_permission_error_carries_directory_permission_guidance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(ensure_module.RUNTIME_DIR_ENV, raising=False)
@@ -1327,8 +1329,9 @@ def test_default_runtime_dir_permission_error_carries_the_destructive_repair(
         user_runtime_dir()
 
     assert exc_info.value.code == "ATTACH_RUNTIME_DIR_ERROR"
-    assert "Remove-Item" in exc_info.value.hint
-    assert str(tmp_path / "godot-ai") in exc_info.value.hint
+    assert "Remove-Item" not in exc_info.value.hint
+    assert "permissions" in exc_info.value.hint
+    assert str(tmp_path / "godot-ai" / "runtime") in exc_info.value.hint
 
 
 @pytest.mark.asyncio

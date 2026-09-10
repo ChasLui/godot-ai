@@ -75,6 +75,17 @@ func setup() -> void:
 	_call_log.clear()
 
 
+func test_reload_is_rejected_before_any_batch_command_runs() -> void:
+	var result: Dictionary = _handler.batch_execute({"commands": [
+		{"command": "_ok_pure", "params": {}},
+		{"command": "reload_plugin", "params": {}},
+		{"command": "_ok_pure", "params": {}},
+	]})
+	assert_true(result.has("error"))
+	assert_contains(str(result.error.message), "reload_plugin")
+	assert_eq(_call_log, [], "reload cannot leave an executing batch behind")
+
+
 func _undo_for_scene(scene_root: Node) -> UndoRedo:
 	return _undo_redo.get_history_undo_redo(_undo_redo.get_object_history_id(scene_root))
 

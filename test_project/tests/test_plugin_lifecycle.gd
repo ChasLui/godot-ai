@@ -430,31 +430,37 @@ func test_post_update_banner_depends_on_whether_bridges_can_follow() -> void:
 	assert_true(label.begins_with("Quit and relaunch AI clients"), label)
 	plugin._post_update_outcome = {"outcome": "success", "from_version": "4.1.0", "to_version": "4.1.1"}
 	label = plugin._post_update_complete_label()
-	assert_true(label.begins_with("AI clients that were connected during the update keep working on v4.1.1"), label)
-	assert_true(Plugin.attached_bridges_follow("4.1.0", "4.2.0"))
-	assert_true(Plugin.attached_bridges_follow("4.1.0", "4.1.0"))
-	assert_true(Plugin.attached_bridges_follow("4.0.4", "4.0.5"), "the tolerant bridge shipped in 4.0.4")
-	assert_false(Plugin.attached_bridges_follow("4.1.0", "5.0.0"), "a major change needs new bridges")
-	assert_false(Plugin.attached_bridges_follow("4.0.3", "4.1.0"), "a 4.0.x bridge refuses the new server")
-	assert_false(Plugin.attached_bridges_follow("3.2.5", "4.1.0"))
-	assert_false(Plugin.attached_bridges_follow("", "4.1.0"))
+	assert_true(label.begins_with("AI clients already using v4.1.0 can reconnect to v4.1.1 without restarting."), label)
+	assert_true(label.contains("Relaunch clients still using an older version."), label)
+	assert_true(McpServerVersionCheck.attached_bridges_follow("4.1.0", "4.2.0"))
+	assert_true(McpServerVersionCheck.attached_bridges_follow("4.1.0", "4.1.0"))
+	assert_true(McpServerVersionCheck.attached_bridges_follow("4.0.4", "4.0.5"), "the tolerant bridge shipped in 4.0.4")
+	assert_false(McpServerVersionCheck.attached_bridges_follow("4.1.0", "5.0.0"), "a major change needs new bridges")
+	assert_false(McpServerVersionCheck.attached_bridges_follow("4.0.3", "4.1.0"), "an older bridge refuses the new server")
+	assert_false(McpServerVersionCheck.attached_bridges_follow("3.2.5", "4.1.0"))
+	assert_false(McpServerVersionCheck.attached_bridges_follow("", "4.1.0"))
 	plugin._lifecycle = null
 	plugin.free()
 
 
-func test_post_update_plan_waits_longer_for_the_status_probe() -> void:
-	## An old bridge's backend may still be settling right after the restart;
-	## 800 ms read it as a foreign process and nothing replaced it.
-	## The lifecycle is configured in _enter_tree, before _finish_post_update
-	## arms the replacement, so the plan must read the recorded outcome.
+func test_normal_and_post_update_starts_share_the_status_probe_window() -> void:
+	## A healthy delayed status must get the same three-second window during
+	## ordinary startup as after an update, before any launch decision.
 	var plugin := Plugin.new()
-	plugin._post_update_outcome = {"outcome": "success", "from_version": "4.0.2", "to_version": "4.0.3"}
-	assert_true(plugin._post_update_replaced_version.is_empty(), "the arm is not set yet at configure time")
-	assert_eq(int(plugin._capture_lifecycle_plan().probe_timeout_ms), Plugin.POST_UPDATE_PROBE_TIMEOUT_MS)
-	plugin._post_update_outcome = {}
-	assert_eq(int(plugin._capture_lifecycle_plan().probe_timeout_ms), Lifecycle.DEFAULT_PROBE_TIMEOUT_MS)
-	plugin._post_update_outcome = {"outcome": "failed", "from_version": "4.0.2"}
-	assert_eq(int(plugin._capture_lifecycle_plan().probe_timeout_ms), Lifecycle.DEFAULT_PROBE_TIMEOUT_MS)
+	for outcome in [{}, {"outcome": "success"}, {"outcome": "failed"}]:
+		plugin._post_update_outcome = outcome
+		var plan: Dictionary = plugin._capture_lifecycle_plan()
+		plan["automatic_effects"] = false
+		var manager := Lifecycle.new()
+		manager.configure(plan)
+		var effects: Array[Dictionary] = []
+		manager.effect_requested.connect(func(_id: int, kind: String, payload: Dictionary):
+			effects.append({"kind": kind, "payload": payload})
+		)
+		manager.start_server()
+		assert_eq(effects.size(), 1)
+		assert_eq(effects[0].kind, Lifecycle.PROBE)
+		assert_eq(int(effects[0].payload.timeout_ms), 3000)
 	plugin._lifecycle = null
 	plugin.free()
 
@@ -494,7 +500,21 @@ func test_deferred_clients_do_not_block_startup_and_are_named_for_configure() ->
 	)
 	assert_true(label.contains("Cursor (its configuration could not be read: unexpected token)"), label)
 	assert_true(label.contains("Configure"), label)
+	var dock := Dock.new()
+	dock._build_ui()
+	plugin._dock = dock
+	plugin._present_post_update_complete()
+	assert_eq(dock._update_status_label.text, "Installed — client setup needed")
+	assert_eq(dock._update_label.text, label, "the client-specific failure remains visible")
+	assert_true(dock._update_label.has_theme_color_override("font_color"))
+	assert_eq(dock._update_label.get_theme_color("font_color"), Dock._UPDATE_LABEL_COLOR,
+		"deferred migrations must not display green success")
 	plugin._post_update_deferred = []
 	assert_false(plugin._post_update_complete_label().contains("Not migrated"))
+	plugin._present_post_update_complete()
+	assert_eq(dock._update_status_label.text, "Godot AI installed",
+		"installation alone does not claim the server or clients are ready")
+	plugin._dock = null
+	dock.free()
 	plugin._lifecycle = null
 	plugin.free()

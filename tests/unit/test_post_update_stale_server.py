@@ -118,7 +118,9 @@ def test_owned_launch_waits_boundedly_for_a_stable_branded_process_grant() -> No
 
 def test_windows_fingerprint_has_a_reuse_resistant_non_cim_fallback() -> None:
     source = (PLUGIN / "utils" / "port_resolver.gd").read_text(encoding="utf-8")
-    block = get_func_block(source, "static func process_fingerprint(pid: int) -> String:")
+    block = get_func_block(
+        source, "static func process_fingerprint(pid: int, snapshot: Variant = null) -> String:"
+    )
 
     assert "Get-CimInstance Win32_Process" in block
     assert "Get-Process -Id %d -ErrorAction Stop" in block
@@ -252,8 +254,9 @@ def test_process_kill_boundary_revalidates_exact_identity_without_child_heuristi
         "static func kill_exact_processes(",
     )
 
-    assert "process_fingerprint(pid) != fingerprint" in kill
-    assert "require_brand and not pid_cmdline_is_godot_ai(pid)" in kill
+    assert "var snapshot: Variant = capture_process_snapshot(pid)" in kill
+    assert "process_fingerprint(pid, snapshot) != fingerprint" in kill
+    assert "require_brand and not pid_cmdline_is_godot_ai(pid, snapshot)" in kill
     assert 'taskkill", ["/PID", str(pid), "/T", "/F"]' in kill
     assert "not require_tree_proof and not pid_alive(pid)" in kill
     assert "find_windows_spawn_children" not in source

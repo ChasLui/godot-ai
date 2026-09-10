@@ -534,10 +534,16 @@ def test_signed_update_restarts_into_matching_live_server(
     ## an older bridge refuses it and the user is told to quit and relaunch.
     base_tuple = tuple(int(part) for part in base_version.split(".")[:3])
     if base_tuple >= (4, 0, 4):
-        expected_client_line = f"keep working on v{next_version}"
+        expected_client_line = (
+            f"MCP | AI clients using v{base_version} can reconnect to v{next_version}; "
+            "relaunch clients still using older versions"
+        )
     else:
-        expected_client_line = f"must be quit and relaunched to use v{next_version}"
-    assert f"MCP | AI clients attached before the update {expected_client_line}" in log
+        expected_client_line = (
+            "MCP | AI clients attached before the update "
+            f"must be quit and relaunched to use v{next_version}"
+        )
+    assert expected_client_line in log
 
     initial_editor, restarted_editor = read_editor_receipts(project)
     assert initial_editor["pid"] != restarted_editor["pid"], (initial_editor, restarted_editor)

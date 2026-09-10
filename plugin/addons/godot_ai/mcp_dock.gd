@@ -2100,7 +2100,8 @@ func _build_tools_tab(tabs: TabContainer) -> void:
 
 	_update_confirm = ConfirmationDialog.new()
 	_update_confirm.title = "Update Godot AI?"
-	_update_confirm.ok_button_text = "Save & Update"
+	_update_confirm.ok_button_text = "Update and restart"
+	_update_confirm.cancel_button_text = "Later"
 	_update_confirm.confirmed.connect(_on_update_confirmed)
 	add_child(_update_confirm)
 
@@ -2746,7 +2747,9 @@ func _on_update_pressed() -> void:
 	## user's session. A dock that is not in a scene tree has no dialog to
 	## show and proceeds directly.
 	if _update_confirm != null and is_inside_tree():
-		_update_confirm.dialog_text = update_confirm_text(_update_candidate_version)
+		_update_confirm.dialog_text = update_confirm_text(
+			_update_candidate_version, ClientConfigurator.get_plugin_version()
+		)
 		_update_confirm.popup_centered()
 		return
 	update_requested.emit()
@@ -2756,12 +2759,16 @@ func _on_update_confirmed() -> void:
 	update_requested.emit()
 
 
-static func update_confirm_text(version: String) -> String:
+static func update_confirm_text(version: String, current_version: String) -> String:
 	var target := "Godot AI v%s" % version if not version.is_empty() else "the new Godot AI"
+	var clients := (
+		"AI clients already using v%s can reconnect without restarting. Relaunch clients still using an older version." % current_version
+		if McpServerVersionCheck.attached_bridges_follow(current_version, version)
+		else "Quit and relaunch connected AI clients after the update."
+	)
 	return (
-		"This will save your project and relaunch the editor to install %s.\n"
-		+ "AI clients connected right now must be restarted afterwards.\n\nContinue?"
-	) % target
+		"This will save your project and restart the Godot editor to install %s.\n\n%s"
+	) % [target, clients]
 
 
 func present_update_check(result: Dictionary) -> void:
@@ -2770,7 +2777,7 @@ func present_update_check(result: Dictionary) -> void:
 	_update_label.add_theme_color_override("font_color", _UPDATE_LABEL_COLOR)
 	_update_banner.visible = true
 	## A fresh candidate re-arms the action. The restarted editor after an
-	## update shows "Update complete" with the button disabled; a newer release
+	## update shows "Godot AI installed" with the button disabled; a newer release
 	## found later in that same session must still be installable. A running
 	## install or a pending post-update action keeps ownership of the button.
 	if _update_install_in_flight or not _post_update_action.is_empty():
@@ -2816,9 +2823,10 @@ func present_update_state(state: Dictionary) -> void:
 		_update_label.text = String(state["label_text"])
 	if state.has("banner_visible") and _update_banner != null:
 		_update_banner.visible = bool(state["banner_visible"])
-	if String(state.get("outcome", "")) == "success" and _update_label != null:
-		## Visual confirmation for successful terminal update states.
-		_update_label.add_theme_color_override("font_color", Color.GREEN)
+	if state.has("label_text") and _update_label != null:
+		## Installation is distinct from server/client readiness. Instructions
+		## can still name failed migrations or clients that must reconnect.
+		_update_label.add_theme_color_override("font_color", _UPDATE_LABEL_COLOR)
 
 
 func _set_update_status(text: String) -> void:

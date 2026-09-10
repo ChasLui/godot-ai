@@ -525,7 +525,7 @@ func test_post_update_window_reads_as_finishing_not_blocked() -> void:
 	assert_eq(_dock._status_label.text, "Finishing update — starting server…")
 	_dock.present_update_state({
 		"install_in_flight": false,
-		"status_text": "Update complete",
+		"status_text": "Godot AI installed",
 		"post_update_action": "",
 		"outcome": "success",
 	})
@@ -737,19 +737,30 @@ func test_post_update_retry_button_emits_barrier_action_instead_of_a_second_upda
 	dock.free()
 
 
-func test_update_asks_before_saving_and_relaunching() -> void:
-	## A dock outside a scene tree has no dialog to show and proceeds directly
-	## (the test above); the confirmation itself is what a click really does.
-	var text := McpDockScript.update_confirm_text("4.1.0")
+func test_update_confirmation_names_editor_restart_and_client_compatibility() -> void:
+	var text := McpDockScript.update_confirm_text("4.1.0", "4.0.4")
 	assert_true(text.contains("save your project"), text)
-	assert_true(text.contains("relaunch the editor"), text)
+	assert_true(text.contains("restart the Godot editor"), text)
 	assert_true(text.contains("Godot AI v4.1.0"), text)
-	assert_true(text.contains("AI clients connected right now must be restarted"), text)
-	assert_true(McpDockScript.update_confirm_text("").contains("the new Godot AI"))
+	assert_true(text.contains("AI clients already using v4.0.4 can reconnect without restarting."), text)
+	assert_true(text.contains("Relaunch clients still using an older version."), text)
+	for versions in [["4.0.3", "4.1.0"], ["4.1.0", "5.0.0"], ["", "4.1.0"], ["4.0.4", ""]]:
+		text = McpDockScript.update_confirm_text(versions[1], versions[0])
+		assert_true(text.contains("Quit and relaunch connected AI clients"), text)
+		assert_false(text.contains("without restarting"), text)
+	assert_true(McpDockScript.update_confirm_text("", "4.0.4").contains("the new Godot AI"))
+
+
+func test_update_dialog_defers_until_confirmation() -> void:
 	var dock := McpDockScript.new()
+	dock._build_ui()
 	var update_calls := [0]
 	dock.update_requested.connect(func() -> void: update_calls[0] += 1)
-	dock._on_update_confirmed()
+	assert_eq(dock._update_confirm.get_ok_button().text, "Update and restart")
+	assert_eq(dock._update_confirm.get_cancel_button().text, "Later")
+	dock._update_confirm.canceled.emit()
+	assert_eq(update_calls[0], 0, "Later must leave the update unrequested")
+	dock._update_confirm.confirmed.emit()
 	assert_eq(update_calls[0], 1, "confirming is what requests the update")
 	dock.free()
 
@@ -958,14 +969,14 @@ func test_update_status_text_never_replaces_the_button_action() -> void:
 
 
 func test_new_update_candidate_rearms_the_button_after_a_completed_update() -> void:
-	## The restarted editor after an update shows "Update complete" with the
+	## The restarted editor after an update shows "Godot AI installed" with the
 	## button disabled. A newer release found later in that same session (the
 	## fleet's 4.0.0 -> 4.0.2 morning) must be installable without another
 	## editor restart.
 	_dock._build_ui()
 	_dock.present_update_state({
 		"install_in_flight": false,
-		"status_text": "Update complete",
+		"status_text": "Godot AI installed",
 		"button_disabled": true,
 		"label_text": "Restart AI clients that were connected during the update so they use v4.0.2.",
 		"banner_visible": true,
@@ -973,7 +984,9 @@ func test_new_update_candidate_rearms_the_button_after_a_completed_update() -> v
 		"outcome": "success",
 	})
 	assert_true(_dock._update_btn.disabled)
-	assert_eq(_dock._update_label.get_theme_color("font_color"), Color.GREEN)
+	assert_true(_dock._update_label.has_theme_color_override("font_color"))
+	assert_eq(_dock._update_label.get_theme_color("font_color"), McpDockScript._UPDATE_LABEL_COLOR,
+		"installed files do not prove clients have reconnected")
 	_dock.present_update_check({"version": "4.0.3", "label_text": "Update available: v4.0.3"})
 	assert_false(_dock._update_btn.disabled)
 	assert_eq(_dock._update_btn.text, "Update")

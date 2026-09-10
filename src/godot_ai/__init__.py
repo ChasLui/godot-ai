@@ -156,7 +156,9 @@ def preflight_check_port(
 WAIT_FOR_PORT_ENV = "GODOT_AI_WAIT_FOR_PORT_MS"
 LAUNCH_ID_ENV = "GODOT_AI_LAUNCH_ID"
 WAIT_FOR_PORT_RETRY_SECONDS = 0.05
-WAIT_FOR_PORT_MAX_SECONDS = 30.0
+# Match the plugin's bounded replacement wait. Windows identity checks and
+# termination have taken over 25 seconds after this process entered the wait.
+WAIT_FOR_PORT_MAX_SECONDS = 60.0
 
 
 def _wait_for_port_seconds() -> float:

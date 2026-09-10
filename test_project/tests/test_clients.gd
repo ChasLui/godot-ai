@@ -4164,6 +4164,46 @@ func test_claude_desktop_migration_omits_empty_env() -> void:
 	assert_false(entry.has("env"), "an env object emptied by migration must be omitted")
 
 
+func test_consoleless_python_keeps_direct_sibling_without_probe() -> void:
+	var directory := _scratch_dir.path_join("direct_python")
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory))
+	var python := ProjectSettings.globalize_path(directory.path_join("python.exe"))
+	var pythonw := ProjectSettings.globalize_path(directory.path_join("pythonw.exe"))
+	_write_text(python, "fixture interpreter")
+	_write_text(pythonw, "fixture GUI interpreter")
+	assert_eq(McpClientConfigurator._consoleless_python_for_interpreter(
+		python, {"exit_code": 1, "stdout": ""}
+	), pythonw, "an installed sibling needs no subprocess")
+
+
+func test_consoleless_python_resolves_uv_launcher_base_interpreter() -> void:
+	var directory := _scratch_dir.path_join("managed_python")
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory))
+	var launcher := ProjectSettings.globalize_path(_scratch_dir.path_join("python3.14.exe"))
+	var python := ProjectSettings.globalize_path(directory.path_join("python.exe"))
+	var pythonw := ProjectSettings.globalize_path(directory.path_join("pythonw.exe"))
+	_write_text(launcher, "fixture uv launcher")
+	_write_text(python, "fixture base interpreter")
+	_write_text(pythonw, "fixture GUI interpreter")
+	assert_eq(McpClientConfigurator._consoleless_python_for_interpreter(
+		launcher, {"exit_code": 0, "stdout": python + "\r\n"}
+	), pythonw, "a launcher without a sibling resolves the installed GUI interpreter")
+	for invalid in [
+		{"exit_code": 1, "stdout": python},
+		{"exit_code": 0, "stdout": "relative/python.exe"},
+		{"exit_code": 0, "stdout": python + "\nextra output"},
+		{"exit_code": 0, "stdout": python + ".missing"},
+		{"exit_code": 0, "stdout": 42},
+	]:
+		assert_eq(McpClientConfigurator._consoleless_python_for_interpreter(
+			launcher, invalid
+		), "", "failed or malformed interpreter discovery must not produce a launch")
+	DirAccess.remove_absolute(pythonw)
+	assert_eq(McpClientConfigurator._consoleless_python_for_interpreter(
+		launcher, {"exit_code": 0, "stdout": python}
+	), "", "a missing GUI interpreter must keep discovery unavailable")
+
+
 func test_claude_desktop_missing_launch_is_error_without_write() -> void:
 	var path := _scratch_dir.path_join("claude_attach_missing_launch.json")
 	_remove_if_exists(path)
