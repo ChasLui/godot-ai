@@ -76,13 +76,16 @@ func setup() -> void:
 
 
 func test_reload_is_rejected_before_any_batch_command_runs() -> void:
+	_dispatcher.register("reload_plugin", func(_p: Dictionary) -> Dictionary:
+		_call_log.append("reload_plugin")
+		return {"data": {"undoable": false}})
 	var result: Dictionary = _handler.batch_execute({"commands": [
 		{"command": "_ok_pure", "params": {}},
 		{"command": "reload_plugin", "params": {}},
 		{"command": "_ok_pure", "params": {}},
 	]})
-	assert_true(result.has("error"))
-	assert_contains(str(result.error.message), "reload_plugin")
+	assert_is_error(result, ErrorCodes.VALUE_OUT_OF_RANGE)
+	assert_contains(str(result.get("error", {}).get("message", "")), "reload_plugin must be called directly")
 	assert_eq(_call_log, [], "reload cannot leave an executing batch behind")
 
 
