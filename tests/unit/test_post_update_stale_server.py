@@ -93,7 +93,19 @@ def test_lifecycle_worker_uses_the_main_thread_capability_path_snapshot() -> Non
     read = get_func_block(lifecycle, "func _read_capability(port: int) -> Dictionary:")
 
     assert '"capability_path": str(policy.get("capability_path", ""))' in capture
-    assert '_endpoint_policy["capability_path"] = TransportCapability.path_for_http_port(' in plugin
+    activation = get_func_block(plugin, "func _activate_startup_endpoints() -> void:")
+    path_capture = (
+        'resolved_policy["capability_path"] = TransportCapability.path_for_http_port(http_port)'
+    )
+    assert activation.index("ClientConfigurator.capture_endpoint_policy()") < activation.index(
+        'var http_port := int(resolved_policy.http_port)'
+    ) < activation.index(path_capture)
+    assert activation.index(path_capture) < activation.index(
+        "_set_endpoint_policy(resolved_policy)"
+    )
+    assert activation.index("_set_endpoint_policy(resolved_policy)") < activation.index(
+        "_lifecycle.configure(_capture_lifecycle_plan())"
+    )
     assert 'str(_endpoint_policy.get("capability_path", ""))' in plugin
     assert 'str(_plan.get("capability_path", ""))' in read
     assert lifecycle.count("var capability := _read_capability(port)") == 4
@@ -205,10 +217,14 @@ def test_root_starts_only_after_lifecycle_configuration() -> None:
         "func _continue_enter_tree_after_update_barrier() -> void:",
     )
     release = get_func_block(plugin, "func _release_normal_startup() -> void:")
-    assert "_lifecycle.configure(_capture_lifecycle_plan())" in compose
-    assert "_begin_startup_release()" in compose
-    assert compose.index("_lifecycle.configure") < compose.index("_begin_startup_release()")
+    activation = get_func_block(plugin, "func _activate_startup_endpoints() -> void:")
+    assert compose.index("add_control_to_dock(") < compose.index("_activate_startup_endpoints()")
+    assert activation.index("_set_endpoint_policy(resolved_policy)") < activation.index(
+        "_lifecycle.configure(_capture_lifecycle_plan())"
+    ) < activation.index("_begin_startup_release()")
+    assert "_begin_startup_release()" not in compose
     assert "_start_server()" not in compose
+    assert "_start_server()" not in activation
     assert "_start_server()" in release
 
 

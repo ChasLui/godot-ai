@@ -274,9 +274,6 @@ func _continue_enter_tree_after_update_barrier() -> void:
 	## is an activation effect on Windows (`netsh`), so it runs only after every
 	## owner and the Dock have been constructed and wired below.
 	_endpoint_policy = ClientConfigurator.capture_endpoint_policy()
-	_endpoint_policy["capability_path"] = TransportCapability.path_for_http_port(
-		int(_endpoint_policy.http_port)
-	)
 	_resolved_ws_port = int(_endpoint_policy.ws_port)
 
 	## Construct plugin-lifetime work owners before attaching the replaceable
@@ -564,13 +561,70 @@ func _continue_enter_tree_after_update_barrier() -> void:
 	_startup_trace_phase("dock_attached")
 	## Activation barrier: no process, socket, or probe effect begins until all
 	## owners and the replaceable Dock have been constructed and wired.
-	var resolved_policy := _endpoint_policy.duplicate(true)
-	resolved_policy["ws_port"] = _resolve_ws_port(int(resolved_policy.ws_port))
+	_activate_startup_endpoints()
+
+
+## Endpoint selection is retryable before the immutable launch policy or any
+## client migration worker exists. An old bridge keeps its own ports.
+func _activate_startup_endpoints() -> void:
+	if str(_post_update_outcome.get("outcome", "")) == "success":
+		var prepared := ClientConfigurator.prepare_major_upgrade_endpoints(
+			str(_post_update_outcome.get("from_version", "")),
+			str(_post_update_outcome.get("to_version", "")),
+		)
+		if not bool(prepared.get("ok", false)):
+			_present_endpoint_setup_failure(str(prepared.get("error", "Endpoint selection failed.")))
+			return
+	var override := ClientConfigurator.v4_endpoint_ports_status()
+	if not bool(override.get("ok", false)):
+		_present_endpoint_setup_failure(str(override.get("error", "Invalid endpoint override.")))
+		return
+	var resolved_policy := ClientConfigurator.capture_endpoint_policy()
+	var http_port := int(resolved_policy.http_port)
+	var configured_ws := int(resolved_policy.ws_port)
+	if (
+		http_port < ClientConfigurator.MIN_PORT or http_port > ClientConfigurator.MAX_PORT
+		or configured_ws < ClientConfigurator.MIN_PORT or configured_ws > ClientConfigurator.MAX_PORT
+		or http_port == configured_ws
+	):
+		_present_endpoint_setup_failure("Choose distinct HTTP and WebSocket ports between %d and %d in Godot AI settings." % [ClientConfigurator.MIN_PORT, ClientConfigurator.MAX_PORT])
+		return
+	var resolved_ws := _resolve_ws_port(configured_ws)
+	if (
+		resolved_ws < ClientConfigurator.MIN_PORT or resolved_ws > ClientConfigurator.MAX_PORT
+		or resolved_ws == http_port
+		or (bool(override.present) and resolved_ws != configured_ws)
+	):
+		_present_endpoint_setup_failure("The configured WebSocket port is unavailable. Choose another endpoint pair in Godot AI settings, then retry.")
+		return
+	resolved_policy["ws_port"] = resolved_ws
+	resolved_policy["capability_path"] = TransportCapability.path_for_http_port(http_port)
 	_set_endpoint_policy(resolved_policy)
+	if _connection != null:
+		_connection.ws_port = resolved_ws
+	if _post_update_action == "retry_endpoints":
+		_post_update_action = ""
+		if _dock != null:
+			_dock.present_update_state({"post_update_action": "", "status_text": "", "label_text": "", "banner_visible": false})
 	## #691: publish every environment/setting value before the first worker.
 	ClientConfigurator.warm_env_snapshot(_endpoint_policy)
 	_lifecycle.configure(_capture_lifecycle_plan())
 	_begin_startup_release()
+
+
+func _present_endpoint_setup_failure(error: String) -> void:
+	_post_update_action = "retry_endpoints"
+	_lifecycle._block_without_effect("endpoint_setup_failed", error)
+	if _dock != null:
+		_dock.present_update_state({
+			"install_in_flight": false,
+			"button_text": "Retry endpoint setup",
+			"status_text": "Client endpoint setup failed",
+			"button_disabled": false,
+			"label_text": error,
+			"banner_visible": true,
+			"post_update_action": "retry_endpoints",
+		})
 
 
 func _client_health_is_blocked() -> bool:
@@ -838,9 +892,9 @@ func _on_post_update_repin_completed(result: Dictionary) -> void:
 			)
 	## A click cannot prove that an external client restarted. The enforceable
 	## boundary is the one we own: repin its configuration, mark the update
-	## complete, then start and authenticate that server. Clients reconnect to
-	## the stable endpoint; a stale client can still be restarted as remediation,
-	## but it must not hold a healthy installation behind ceremony.
+	## complete, then start and authenticate that server. A major upgrade can
+	## select independent ports; old clients must reload the migrated config,
+	## but cannot hold the new editor endpoint behind their existing leases.
 	_finish_post_update()
 
 
@@ -862,7 +916,9 @@ func _present_post_update_barrier_failure(error: String) -> void:
 func _on_dock_post_update_action_requested(action: String) -> void:
 	if action != _post_update_action:
 		return
-	if action == "retry":
+	if action == "retry_endpoints":
+		_activate_startup_endpoints()
+	elif action == "retry":
 		_begin_startup_release()
 
 
@@ -886,7 +942,7 @@ func _finish_post_update() -> void:
 		print("MCP | AI clients using v%s can reconnect to v%s; relaunch clients still using older versions" % [_post_update_replaced_version, to_version])
 	else:
 		print(
-			"MCP | AI clients attached before the update must be quit and relaunched to use v%s"
+			"MCP | Refresh the Godot AI MCP connection and reload its configuration once to use v%s; relaunch the AI app if it cannot reload the configuration"
 			% to_version
 		)
 	_present_post_update_complete()
@@ -927,9 +983,9 @@ func _post_update_complete_label() -> String:
 	var to_version := str(_post_update_outcome.get("to_version", ""))
 	var from_version := str(_post_update_outcome.get("from_version", ""))
 	var text := (
-		"AI clients already using v%s can reconnect to v%s without restarting. Relaunch clients still using an older version." % [from_version, to_version]
+		"AI clients already using v%s can reconnect to v%s without restarting. Refresh older MCP connections and reload their configuration; relaunch the AI app if needed." % [from_version, to_version]
 		if McpServerVersionCheck.attached_bridges_follow(from_version, to_version)
-		else "Quit and relaunch AI clients that were connected during the update so they use v%s."
+		else "Refresh the Godot AI MCP connection and reload its configuration once to use v%s. If the AI app cannot reload its configuration, quit and relaunch it."
 		% to_version
 	)
 	if _post_update_deferred.is_empty():

@@ -44,6 +44,63 @@ def _static_func_block(text: str, signature: str) -> str:
     return text[start : end.start() if end else len(text)]
 
 
+@pytest.mark.parametrize("preserve", [False, True])
+def test_port_isolation_preserves_reader_only_when_requested(
+    tmp_path: Path, preserve: bool
+) -> None:
+    smoke = load_smoke_script()
+    addon = ROOT / "plugin" / "addons" / "godot_ai"
+    configurator = tmp_path / "client_configurator.gd"
+    settings = tmp_path / "settings.gd"
+    shutil.copyfile(addon / "client_configurator.gd", configurator)
+    shutil.copyfile(addon / "utils" / "settings.gd", settings)
+    original = configurator.read_text(encoding="utf-8")
+    smoke.patch_port_isolation(
+        configurator, settings, 18850, 19850, preserve_port_settings=preserve
+    )
+    patched = configurator.read_text(encoding="utf-8")
+    combined = patched + settings.read_text(encoding="utf-8")
+    for key in ("http_port", "ws_port", "v4_endpoint_ports"):
+        assert f'"godot_ai/{key}"' not in combined
+        assert f'"godot_ai_self_update_smoke/{key}"' in combined
+    assert "const DEFAULT_HTTP_PORT := 18850" in patched
+    assert "const DEFAULT_WS_PORT := 19850" in patched
+    signature = "static func _read_port_setting("
+    if preserve:
+        assert _static_func_block(patched, signature) == _static_func_block(original, signature)
+    else:
+        reader = _static_func_block(patched, signature)
+        assert "_key: String" in reader
+        assert "return default_port" in reader
+        assert "es.get_setting" not in reader
+
+
+@pytest.mark.parametrize(
+    ("version", "http", "ws", "valid"),
+    [
+        ("4.0.5", "18861", "18862", True),
+        ("3.2.5", "18861", "18862", False),
+        ("4.0.5", "", "18862", False),
+        ("4.0.5", "18861", "18861", False),
+        ("4.0.5", "18861", "65536", False),
+    ],
+)
+def test_fixture_client_ports_uses_validated_migrated_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: str, http: str, ws: str, valid: bool
+) -> None:
+    smoke = load_smoke_script()
+    monkeypatch.setattr(smoke, "fixture_environment_paths", lambda _: {"codex_home": tmp_path})
+    args = ["--from", f"godot-ai=={version}", "godot-ai", "attach", "--port", http, "--ws-port", ws]
+    (tmp_path / "config.toml").write_text(
+        '[mcp_servers."godot-ai"]\ncommand = "never-executed"\nargs = ' + json.dumps(args)
+    )
+    if valid:
+        assert smoke.fixture_client_ports(tmp_path, "4.0.5") == (18861, 18862)
+    else:
+        with pytest.raises(smoke.HarnessError, match="fixture client ports"):
+            smoke.fixture_client_ports(tmp_path, "4.0.5")
+
+
 def test_self_update_smoke_harness_prepares_fixture(tmp_path: Path) -> None:
     smoke = load_smoke_script()
     project = tmp_path / "self-update-smoke"

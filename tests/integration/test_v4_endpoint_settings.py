@@ -1,0 +1,142 @@
+"""Real EditorSettings and sockets exercise the optional major-upgrade endpoint pair."""
+
+import json
+import shutil
+import socket
+from pathlib import Path
+
+import pytest
+
+from tests.integration._self_update_fixture import (
+    PLUGIN_ROOT,
+    godot_bin_or_skip,
+    run_godot_editor,
+)
+
+pytestmark = pytest.mark.editor
+
+DRIVER = '''@tool
+extends Node
+const Config := preload("res://addons/godot_ai/client_configurator.gd")
+const Reservation := preload("res://addons/godot_ai/utils/windows_port_reservation.gd")
+const Ports := preload("res://addons/godot_ai/utils/port_resolver.gd")
+var failures: Array[String] = []
+var checks := 0
+
+func _ready() -> void:
+    if Engine.is_editor_hint():
+        run.call_deferred()
+
+func check(value: bool, message: String) -> void:
+    checks += 1
+    if not value:
+        failures.append(message)
+
+func run() -> void:
+    var es := EditorInterface.get_editor_settings()
+    var old_http := int(OS.get_environment("OLD_HTTP_PORT"))
+    var old_ws := int(OS.get_environment("OLD_WS_PORT"))
+    es.set_setting("godot_ai/http_port", old_http)
+    es.set_setting("godot_ai/ws_port", old_ws)
+    es.erase(Config.SETTING_V4_ENDPOINT_PORTS)
+    Config.ensure_settings_registered()
+    check(not es.has_setting(Config.SETTING_V4_ENDPOINT_PORTS),
+        "registration must not seed an override")
+    check(Config.http_port() == old_http and Config.ws_port() == old_ws,
+        "historical custom pair retained")
+    var queries := Reservation.netsh_query_count()
+    for versions in [["4.0.4", "4.0.5"], ["", "4.0.4"], ["invalid", "4.0.4"], ["3.2.5", "3.2.6"]]:
+        var unchanged := Config.prepare_major_upgrade_endpoints(versions[0], versions[1])
+        check(unchanged.ok and not unchanged.changed, "non-major migration is inert")
+    check(Reservation.netsh_query_count() == queries,
+        "non-major migration does not query reservations")
+    check(not es.has_setting(Config.SETTING_V4_ENDPOINT_PORTS),
+        "non-major migration does not write override")
+    var legacy_edit := Config.apply_endpoint_settings({"http_port": old_http})
+    check(legacy_edit.ok and not es.has_setting(Config.SETTING_V4_ENDPOINT_PORTS),
+        "ordinary legacy edits stay legacy")
+
+    for invalid in [null, {}, [], {"http_port": old_http},
+        {"http_port": old_http, "ws_port": old_ws, "extra": 1},
+        {"http_port": true, "ws_port": old_ws},
+        {"http_port": 1500.5, "ws_port": old_ws},
+        {"http_port": NAN, "ws_port": old_ws},
+        {"http_port": 0, "ws_port": old_ws},
+        {"http_port": 65536, "ws_port": old_ws},
+        {"http_port": old_http, "ws_port": old_http}]:
+        es.set_setting(Config.SETTING_V4_ENDPOINT_PORTS, invalid)
+        # EditorSettings removes a setting assigned null; absence is intentional.
+        if not es.has_setting(Config.SETTING_V4_ENDPOINT_PORTS):
+            continue
+        var status := Config.v4_endpoint_ports_status()
+        check(not status.ok and status.present and not str(status.error).is_empty(),
+            "invalid present pair has explicit error")
+        check(Config.http_port() == 0 and Config.ws_port() == 0, "invalid pair must not fall back")
+        var refused := Config.prepare_major_upgrade_endpoints("3.2.5", "4.0.4")
+        check(not refused.ok, "major upgrade refuses invalid stored override")
+    check(Reservation.netsh_query_count() == queries, "invalid stored pair must not query OS")
+    es.erase(Config.SETTING_V4_ENDPOINT_PORTS)
+    var selected := Config.prepare_major_upgrade_endpoints("3.2.5", "4.0.4")
+    check(selected.ok and selected.get("changed", false),
+        "major migration selects a pair despite occupied legacy ports")
+    if selected.ok:
+        var pair: Dictionary = es.get_setting(Config.SETTING_V4_ENDPOINT_PORTS)
+        check(pair.size() == 2 and pair.http_port != pair.ws_port,
+            "one complete distinct pair is stored")
+        for port in [pair.http_port, pair.ws_port]:
+            check(port not in [old_http, old_ws], "both new ports exclude both legacy ports")
+            check(Ports.can_bind_local_port(port), "selected new port is bindable")
+        check(Config.http_port() == pair.http_port and Config.ws_port() == pair.ws_port,
+            "effective reads use selected pair")
+        queries = Reservation.netsh_query_count()
+        var repeated := Config.prepare_major_upgrade_endpoints("3.2.5", "4.0.4")
+        check(repeated.ok and not repeated.changed, "repeated migration reuses persisted choice")
+        check(Reservation.netsh_query_count() == queries, "reuse does not probe or reallocate")
+        var changed := Config.apply_endpoint_settings({"http_port": old_http})
+        check(changed.ok and Config.http_port() == old_http and Config.ws_port() == pair.ws_port,
+            "port delta merges effective pair")
+        var before: Dictionary = es.get_setting(Config.SETTING_V4_ENDPOINT_PORTS).duplicate()
+        var refused := Config.apply_endpoint_settings({"ws_port": old_http})
+        check(not refused.ok and es.get_setting(Config.SETTING_V4_ENDPOINT_PORTS) == before,
+            "equal-port edit is atomic refusal")
+        var other := Config.apply_endpoint_settings({"telemetry_enabled": false})
+        check(other.ok and es.get_setting(Config.SETTING_V4_ENDPOINT_PORTS) == before,
+            "non-port edit does not change pair")
+    check(int(es.get_setting("godot_ai/http_port")) == old_http
+        and int(es.get_setting("godot_ai/ws_port")) == old_ws,
+        "major migration and override edits leave legacy settings intact")
+    var file := FileAccess.open("res://result.json", FileAccess.WRITE)
+    file.store_string(JSON.stringify({"checks": checks, "failures": failures}))
+    get_tree().quit()
+'''
+
+
+def test_optional_v4_endpoint_pair_preserves_legacy_and_refuses_malformed(tmp_path: Path) -> None:
+    godot = godot_bin_or_skip()
+    project = tmp_path / "endpoint-settings"
+    shutil.copytree(PLUGIN_ROOT, project / "addons" / "godot_ai")
+    (project / "project.godot").write_text(
+        'config_version=5\n[application]\nconfig/name="Endpoint settings test"\n'
+        '[autoload]\nEndpointDriver="*res://driver.gd"\n', encoding="utf-8",
+    )
+    (project / "driver.gd").write_text(DRIVER, encoding="utf-8")
+    environment = {
+        "APPDATA": str(tmp_path / "roaming"), "LOCALAPPDATA": str(tmp_path / "local"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"), "HOME": str(tmp_path / "home"),
+        "GODOT_AI_DISABLE_TELEMETRY": "true",
+    }
+    for key in ("APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "HOME"):
+        Path(environment[key]).mkdir()
+    with socket.socket() as http_socket, socket.socket() as ws_socket:
+        http_socket.bind(("127.0.0.1", 0))
+        ws_socket.bind(("127.0.0.1", 0))
+        http_socket.listen()
+        ws_socket.listen()
+        environment.update(OLD_HTTP_PORT=str(http_socket.getsockname()[1]),
+                           OLD_WS_PORT=str(ws_socket.getsockname()[1]))
+        log = run_godot_editor(project, godot, allow_headless=False, timeout=90,
+                               environment=environment)
+    assert "SCRIPT ERROR:" not in log
+    result = json.loads((project / "result.json").read_text(encoding="utf-8"))
+    assert result["failures"] == [], result
+    assert result["checks"] >= 45, result

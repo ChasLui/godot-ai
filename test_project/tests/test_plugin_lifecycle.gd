@@ -104,6 +104,69 @@ class FakeLifecycleActions:
 		return true
 
 
+class EndpointActivationPlugin extends Plugin:
+	var resolved_ports: Array[int] = []
+	var forced_ws := -1
+	var configured_policies: Array[Dictionary] = []
+	var normal_starts := 0
+
+	func _resolve_ws_port(configured_port: int) -> int:
+		resolved_ports.append(configured_port)
+		return configured_port if forced_ws < 0 else forced_ws
+
+	func _capture_lifecycle_plan() -> Dictionary:
+		configured_policies.append(_endpoint_policy.duplicate(true))
+		return _endpoint_policy.merged({"automatic_effects": false})
+
+	func _release_normal_startup() -> void:
+		normal_starts += 1
+
+
+class EndpointJobs extends FakeClientJobs:
+	var lifecycle
+	var activation_seen := {}
+
+	func begin_post_update_repin(from_version: String, to_version: String, replace_owned_mismatches := false) -> Dictionary:
+		activation_seen = {
+			"context": McpClientConfigurator.capture_launch_context(),
+			"plan": lifecycle._plan.duplicate(true),
+		}
+		return super.begin_post_update_repin(from_version, to_version, replace_owned_mismatches)
+
+
+class EndpointDock:
+	var states: Array[Dictionary] = []
+
+	func present_update_state(state: Dictionary) -> void:
+		states.append(state.duplicate(true))
+
+
+var _endpoint_test_settings := {}
+var _endpoint_test_context := {}
+
+
+func suite_setup(_ctx: Dictionary) -> void:
+	var settings := EditorInterface.get_editor_settings()
+	for key in [McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS, McpSettings.SETTING_HTTP_PORT, McpClientConfigurator.SETTING_WS_PORT]:
+		_endpoint_test_settings[key] = {"present": settings.has_setting(key), "value": settings.get_setting(key) if settings.has_setting(key) else null}
+	_endpoint_test_context = McpClientConfigurator.capture_launch_context()
+
+
+func suite_teardown() -> void:
+	_restore_endpoint_test_settings()
+
+
+func _restore_endpoint_test_settings() -> void:
+	var settings := EditorInterface.get_editor_settings()
+	for key in _endpoint_test_settings:
+		var saved: Dictionary = _endpoint_test_settings[key]
+		if bool(saved.present):
+			settings.set_setting(key, saved.value)
+		else:
+			settings.erase(key)
+	McpClientConfigurator.capture_launch_context(_endpoint_test_context)
+
+
 func suite_name() -> String:
 	return "plugin_lifecycle"
 
@@ -427,11 +490,11 @@ func test_post_update_banner_depends_on_whether_bridges_can_follow() -> void:
 	var plugin := Plugin.new()
 	plugin._post_update_outcome = {"outcome": "success", "from_version": "4.0.3", "to_version": "4.1.0"}
 	var label := plugin._post_update_complete_label()
-	assert_true(label.begins_with("Quit and relaunch AI clients"), label)
+	assert_true(label.begins_with("Refresh the Godot AI MCP connection and reload its configuration once"), label)
 	plugin._post_update_outcome = {"outcome": "success", "from_version": "4.1.0", "to_version": "4.1.1"}
 	label = plugin._post_update_complete_label()
 	assert_true(label.begins_with("AI clients already using v4.1.0 can reconnect to v4.1.1 without restarting."), label)
-	assert_true(label.contains("Relaunch clients still using an older version."), label)
+	assert_true(label.contains("Refresh older MCP connections and reload their configuration"), label)
 	assert_true(McpServerVersionCheck.attached_bridges_follow("4.1.0", "4.2.0"))
 	assert_true(McpServerVersionCheck.attached_bridges_follow("4.1.0", "4.1.0"))
 	assert_true(McpServerVersionCheck.attached_bridges_follow("4.0.4", "4.0.5"), "the tolerant bridge shipped in 4.0.4")
@@ -492,7 +555,7 @@ func test_deferred_clients_do_not_block_startup_and_are_named_for_configure() ->
 	assert_eq(plugin.finished, 1, "a deferred client must not turn success into a barrier failure")
 	assert_eq(plugin._post_update_deferred.size(), 2)
 	var label := plugin._post_update_complete_label()
-	assert_true(label.begins_with("Quit and relaunch AI clients"), label)
+	assert_true(label.begins_with("Refresh the Godot AI MCP connection and reload its configuration once"), label)
 	## Each client carries its own reason: an unreadable file is not drift.
 	assert_true(
 		label.contains("Pi Agent (its godot-ai entry differs from what Configure wrote before the update)"),
@@ -518,3 +581,119 @@ func test_deferred_clients_do_not_block_startup_and_are_named_for_configure() ->
 	dock.free()
 	plugin._lifecycle = null
 	plugin.free()
+
+
+func test_major_endpoint_activation_publishes_one_pair_before_repin() -> void:
+	var settings := EditorInterface.get_editor_settings()
+	var pair := {"http_port": 28111, "ws_port": 28112}
+	settings.set_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS, pair)
+	var plugin := EndpointActivationPlugin.new()
+	var jobs := EndpointJobs.new()
+	jobs.lifecycle = plugin._lifecycle
+	var connection := FakeConnection.new()
+	plugin._client_jobs = jobs
+	plugin._connection = connection
+	plugin._post_update_outcome = {"outcome": "success", "from_version": "3.2.5", "to_version": "4.0.5"}
+	plugin._activate_startup_endpoints()
+	assert_eq(plugin.resolved_ports, [28112] as Array[int])
+	assert_eq(plugin.configured_policies.size(), 1)
+	assert_eq(plugin._lifecycle._plan.http_port, 28111)
+	assert_eq(plugin._lifecycle._plan.ws_port, 28112)
+	assert_eq(plugin._lifecycle._plan.capability_path, McpTransportCapability.path_for_http_port(28111))
+	assert_eq(connection.ws_port, 28112)
+	var context := McpClientConfigurator.capture_launch_context()
+	assert_eq(context.http_port, 28111)
+	assert_eq(context.ws_port, 28112)
+	assert_eq(jobs.repin_versions.size(), 1)
+	assert_eq(jobs.activation_seen.context.http_port, 28111, "repin sees only the published new endpoint")
+	assert_eq(jobs.activation_seen.context.ws_port, 28112)
+	assert_eq(jobs.activation_seen.plan.capability_path, McpTransportCapability.path_for_http_port(28111), "lifecycle is frozen before the first migration worker")
+	assert_eq(jobs.repin_versions[0].from, "3.2.5")
+	assert_eq(settings.get_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS), pair)
+	assert_false(plugin._normal_start_released)
+	assert_eq(plugin.normal_starts, 0)
+	plugin._connection = null
+	plugin._client_jobs = null
+	connection.free()
+	jobs.free()
+	plugin._lifecycle = null
+	plugin.free()
+	_restore_endpoint_test_settings()
+
+
+func test_invalid_endpoint_pair_blocks_before_effects_and_retry_precedes_repin() -> void:
+	var settings := EditorInterface.get_editor_settings()
+	settings.set_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS, {})
+	var previous := McpClientConfigurator.capture_launch_context()
+	var plugin := EndpointActivationPlugin.new()
+	var jobs := FakeClientJobs.new()
+	var dock := EndpointDock.new()
+	plugin._client_jobs = jobs
+	plugin._dock = dock
+	plugin._post_update_outcome = {"outcome": "success", "from_version": "3.2.5", "to_version": "4.0.5"}
+	plugin._activate_startup_endpoints()
+	assert_true(plugin.resolved_ports.is_empty(), "malformed override is rejected before port reservation")
+	assert_true(plugin.configured_policies.is_empty())
+	assert_true(plugin._lifecycle._plan.is_empty(), "retry must not encounter an already frozen wrong plan")
+	assert_true(jobs.repin_versions.is_empty())
+	assert_eq(McpClientConfigurator.capture_launch_context(), previous)
+	assert_eq(plugin._lifecycle.episode_snapshot().reason, "endpoint_setup_failed")
+	assert_eq(dock.states.back().post_update_action, "retry_endpoints")
+	assert_eq(dock.states.back().button_text, "Retry endpoint setup")
+	assert_contains(str(dock.states.back().label_text), McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS)
+	assert_false(plugin._update_barrier_blocked, "a settings error does not disable the plugin")
+	plugin._on_dock_post_update_action_requested("retry")
+	assert_true(jobs.repin_versions.is_empty(), "client migration retry cannot bypass endpoint selection")
+	settings.set_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS, {"http_port": 28113, "ws_port": 28114})
+	plugin._on_dock_post_update_action_requested("retry_endpoints")
+	assert_eq(plugin._lifecycle._plan.http_port, 28113)
+	assert_eq(plugin._lifecycle._plan.ws_port, 28114)
+	assert_eq(jobs.repin_versions.size(), 1)
+	assert_eq(plugin._post_update_action, "")
+	assert_eq(plugin.normal_starts, 0)
+	plugin._dock = null
+	plugin._client_jobs = null
+	jobs.free()
+	plugin._lifecycle = null
+	plugin.free()
+	_restore_endpoint_test_settings()
+
+
+func test_persisted_endpoint_pair_cannot_silently_change_during_ws_resolution() -> void:
+	var settings := EditorInterface.get_editor_settings()
+	var pair := {"http_port": 28115, "ws_port": 28116}
+	settings.set_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS, pair)
+	var plugin := EndpointActivationPlugin.new()
+	plugin.forced_ws = 28117
+	plugin._activate_startup_endpoints()
+	assert_eq(plugin.resolved_ports, [28116] as Array[int])
+	assert_true(plugin.configured_policies.is_empty())
+	assert_true(plugin._lifecycle._plan.is_empty())
+	assert_eq(plugin._lifecycle.episode_snapshot().reason, "endpoint_setup_failed")
+	assert_eq(plugin.normal_starts, 0)
+	assert_eq(settings.get_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS), pair)
+	plugin._lifecycle = null
+	plugin.free()
+	_restore_endpoint_test_settings()
+
+
+func test_non_major_activation_without_override_keeps_legacy_custom_ports() -> void:
+	var settings := EditorInterface.get_editor_settings()
+	settings.erase(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS)
+	settings.set_setting(McpSettings.SETTING_HTTP_PORT, 28118)
+	settings.set_setting(McpClientConfigurator.SETTING_WS_PORT, 28119)
+	var plugin := EndpointActivationPlugin.new()
+	var jobs := FakeClientJobs.new()
+	plugin._client_jobs = jobs
+	plugin._post_update_outcome = {"outcome": "success", "from_version": "4.0.4", "to_version": "4.0.5"}
+	plugin._activate_startup_endpoints()
+	assert_false(settings.has_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS))
+	assert_eq(plugin._lifecycle._plan.http_port, 28118)
+	assert_eq(plugin._lifecycle._plan.ws_port, 28119)
+	assert_eq(jobs.repin_versions.size(), 1)
+	assert_eq(jobs.repin_versions[0].from, "4.0.4")
+	plugin._client_jobs = null
+	jobs.free()
+	plugin._lifecycle = null
+	plugin.free()
+	_restore_endpoint_test_settings()

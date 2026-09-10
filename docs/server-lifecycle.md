@@ -17,6 +17,38 @@ until that post-restart tree verification and the pin-only client repin have
 finished. Stop remains available so shutdown cannot be trapped behind the
 release gate.
 
+## Upgrading from a pre-v4 installation
+
+A verified pre-v4 to v4 update selects two free loopback ports before starting
+client migration or the server. It stores the pair in
+`godot_ai/v4_endpoint_ports` and uses that same pair for the capability record,
+server launch, editor connection, and repinned client entries. Later updated
+editors reuse the pair. The historical `godot_ai/http_port` and
+`godot_ai/ws_port` settings remain available to older plugins. A normal v4
+update without this override keeps its existing custom ports.
+
+This avoids waiting for an already-running v3 bridge to release its server.
+The old bridge cannot authenticate to v4, and updating its configuration does
+not change the running process. Reload the AI client's MCP configuration and
+reconnect once; clients that cannot reload configuration need an application
+relaunch. The editor can connect to v4 while the old bridge remains running.
+No legacy server is killed or treated as authenticated by this migration.
+A repinned global client entry now targets the new server; other projects
+still using older plugins need their own plugin update or explicit endpoint
+configuration to join it.
+
+On Windows, client-config rewrites retain complete newline sequences even
+when the existing file uses CRLF. Upgrade checks parse the raw TOML bytes so
+text-reader newline normalization cannot hide an invalid trailing carriage
+return.
+
+Endpoint selection is bounded. If no pair is available, startup remains
+blocked with a retry button. A malformed saved pair also blocks startup;
+correct or remove the named Editor Setting before retrying. The dock's port
+changes update the complete saved pair once the override exists. Ordinary
+capability and ownership checks still apply if another process takes a port
+between selection and launch.
+
 ## One serialized episode
 
 The lifecycle stores one tagged episode with these states:

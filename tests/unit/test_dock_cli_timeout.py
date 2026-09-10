@@ -348,15 +348,30 @@ def test_composition_and_post_update_barriers_precede_every_normal_start_effect(
         plugin_source,
         "func _continue_enter_tree_after_update_barrier() -> void:",
     )
+    activation = get_func_block(plugin_source, "func _activate_startup_endpoints() -> void:")
     begin = get_func_block(plugin_source, "func _begin_startup_release() -> void:")
     release = get_func_block(plugin_source, "func _release_normal_startup() -> void:")
 
     assert "_continue_enter_tree_after_update_barrier()" in enter
-    assert compose.index("add_control_to_dock(") < compose.index("_resolve_ws_port(")
-    assert compose.index("_resolve_ws_port(") < compose.index("_begin_startup_release()")
-    assert "_client_jobs.activate()" not in compose
-    assert "_start_server()" not in compose
-    assert "check_for_updates" not in compose
+    assert compose.index("add_control_to_dock(") < compose.index("_activate_startup_endpoints()")
+    ordered_activation = (
+        "prepare_major_upgrade_endpoints(",
+        "v4_endpoint_ports_status()",
+        'if not bool(override.get("ok", false)):',
+        "ClientConfigurator.capture_endpoint_policy()",
+        "_resolve_ws_port(",
+        '_set_endpoint_policy(resolved_policy)',
+        "ClientConfigurator.warm_env_snapshot(_endpoint_policy)",
+        "_lifecycle.configure(_capture_lifecycle_plan())",
+        "_begin_startup_release()",
+    )
+    positions = [activation.index(step) for step in ordered_activation]
+    assert positions == sorted(positions)
+    for effect in ("_client_jobs.activate()", "_start_server()", "check_for_updates"):
+        assert effect not in compose
+        assert effect not in activation
+    assert "_resolve_ws_port(" not in compose
+    assert "_begin_startup_release()" not in compose
     expected_call = """_client_jobs.begin_post_update_repin(
         str(_post_update_outcome.get("from_version", "")),
         str(_post_update_outcome.get("to_version", "")),

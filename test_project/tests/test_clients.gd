@@ -6504,3 +6504,28 @@ func test_codebuddy_descriptor_and_stdio_entry() -> void:
 	assert_false(entry.has("url"))
 	assert_false(entry.has("headers"))
 	assert_true(McpJsonStrategy.verify_entry(c, entry, "http://unused", launch))
+
+
+func test_toml_crlf_reconfigure_and_remove_keep_complete_newlines() -> void:
+	var path := _scratch_dir.path_join("crlf_lines.toml")
+	var client := _make_test_toml_client(path)
+	var source := "[mcp_servers.godot-ai]\r\nurl = \"old\"\r\nenabled = false\r\n"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(source)
+	file.close()
+	assert_eq(McpTomlStrategy.configure(client, "godot-ai", "http://127.0.0.1:8000/mcp").get("status"), "ok")
+	var written := FileAccess.get_file_as_bytes(path).get_string_from_utf8()
+	assert_true(written.ends_with("\n"), "reconfigured CRLF file must not end in bare CR")
+	assert_true(written.contains("enabled = false\r\n"), "preserved final assignment keeps CRLF")
+	file = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(written + "[other]\r\nkeep = true\r\n")
+	file.close()
+	assert_eq(McpTomlStrategy.remove(client, "godot-ai").get("status"), "ok")
+	written = FileAccess.get_file_as_bytes(path).get_string_from_utf8()
+	assert_true(written.ends_with("\n"), "remove keeps a complete final newline")
+	assert_true(written.contains("keep = true\r\n"), "foreign final assignment stays intact")
+	file = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(source)
+	file.close()
+	assert_eq(McpTomlStrategy.remove(client, "godot-ai").get("status"), "ok")
+	assert_eq(FileAccess.get_file_as_bytes(path).size(), 0, "removing the only section keeps an empty file")
