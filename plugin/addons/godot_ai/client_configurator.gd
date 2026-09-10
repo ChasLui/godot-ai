@@ -150,7 +150,7 @@ static func prepare_major_upgrade_endpoints(from_version: String, to_version: St
 	if selected.size() != 2:
 		return {"ok": false, "error": "No independent HTTP/WebSocket port pair was available for this major upgrade."}
 	for port in selected:
-		if WindowsPortReservation.is_port_excluded(port) or not PortResolver.can_bind_local_port(port) or PortResolver.is_port_in_use(port):
+		if WindowsPortReservation.parse_excluded(reserved_output, port) or not PortResolver.can_bind_local_port(port) or PortResolver.is_port_in_use(port):
 			return {"ok": false, "error": "The selected upgrade port %d became unavailable; retry endpoint selection." % port}
 	var pair := {"http_port": selected[0], "ws_port": selected[1]}
 	es.set_setting(SETTING_V4_ENDPOINT_PORTS, pair)

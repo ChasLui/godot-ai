@@ -76,6 +76,7 @@ def test_toml_writes_preserve_crlf_user_values_and_valid_final_newline(tmp_path:
         parsed = tomllib.loads(raw.decode("utf-8"))
         if name == "remove":
             assert parsed == {"other": {"keep": "untouched"}}
+            assert raw == other.encode("utf-8")
         else:
             server = parsed["mcp_servers"]["godot-ai"]
             assert server["command"] == "uvx"
@@ -89,3 +90,4 @@ def test_toml_writes_preserve_crlf_user_values_and_valid_final_newline(tmp_path:
                 assert b'note = """first\r\nsecond"""\r\n' in raw
             if name == "append":
                 assert parsed["other"] == {"keep": "untouched"}
+                assert raw.startswith(other.encode("utf-8"))

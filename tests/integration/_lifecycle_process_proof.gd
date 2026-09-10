@@ -6,6 +6,23 @@ const Resolver := preload("res://addons/godot_ai/utils/port_resolver.gd")
 const Capability := preload("res://addons/godot_ai/utils/transport_capability.gd")
 const Authority := preload("res://addons/godot_ai/utils/server_authority.gd")
 const Config := preload("res://addons/godot_ai/client_configurator.gd")
+class CaptureFailureLifecycle extends Lifecycle:
+	var failure_stage := ""
+	var receipt_path := ""
+	var case_name := ""
+	var injected := false
+
+	func _capture_process_snapshot(pid: int) -> Variant:
+		if failure_stage == "initial":
+			injected = true
+			return {"capture_error": true}
+		if failure_stage == "final" and FileAccess.file_exists(receipt_path):
+			var receipt: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(receipt_path))
+			if str(receipt.get("case", "")) == case_name and int(receipt.get("authenticated_requests", 0)) >= 2:
+				injected = true
+				return {"capture_error": true}
+		return super._capture_process_snapshot(pid)
+
 var failures: Array[String] = []
 var rows: Array[Dictionary] = []
 
@@ -47,6 +64,9 @@ func run() -> void:
 		finish()
 		return
 	var cases := [
+		{"name": "initial_capture_failure", "hint": worker_pid, "request": 0, "replacement": worker_pid, "expected": "identity_unavailable"},
+		{"name": "final_capture_failure", "hint": worker_pid, "request": 2, "replacement": worker_pid, "expected": "identity_unavailable"},
+		{"name": "exited_launcher", "hint": worker_pid, "request": 0, "replacement": worker_pid, "expected": "launch_gone"},
 		{"name": "owned_child", "hint": worker_pid, "request": 0, "replacement": worker_pid, "expected": "ok"},
 		{"name": "changed_hint", "hint": launch_pid, "request": 1, "replacement": worker_pid, "expected": "ok"},
 		{"name": "stale_hint_corrected", "hint": stale_pid, "request": 1, "replacement": worker_pid, "expected": "ok"},
@@ -60,12 +80,20 @@ func run() -> void:
 		FileAccess.open(work.path_join("worker.pid"), FileAccess.WRITE).store_string(str(case.hint))
 		write_json(work.path_join("control.json"), {"case": label, "change_on_request": case.request, "replacement_pid": case.replacement})
 		var fingerprint := str(exact.fingerprint) + ("changed" if case.name == "wrong_launch_identity" else "")
-		var grant := Authority.OwnedProcessGrant.new(launch_pid, fingerprint, maxi(1, Time.get_ticks_msec()))
-		var manager := Lifecycle.new()
+		var grant := Authority.OwnedProcessGrant.new(stale_pid if label == "exited_launcher" else launch_pid, fingerprint, maxi(1, Time.get_ticks_msec()))
+		var manager := CaptureFailureLifecycle.new()
+		manager.failure_stage = "initial" if label == "initial_capture_failure" else ("final" if label == "final_capture_failure" else "")
+		manager.receipt_path = work.path_join("route-receipt.json")
+		manager.case_name = label
 		manager.configure({"capability_path": capability_path, "automatic_effects": false})
 		var result := manager._effect_prove({"grant": grant, "http_port": http_port, "expected_ws_port": ws_port, "expected_version": Config.get_plugin_version(), "timeout_ms": 3000, "pid_file": work.path_join("worker.pid"), "http_capability": cap.http, "ws_capability": cap.websocket, "baseline_instance_id": ""})
 		var reason := str(result.get("reason", "ok" if result.get("ok", false) else "missing_result"))
 		require(reason == case.expected, label + " expected " + str(case.expected) + " got " + reason)
+		if not manager.failure_stage.is_empty():
+			require(manager.injected, label + " reaches intended capture failure")
+			if manager.failure_stage == "initial":
+				var diagnostic := manager._launch_unproven_message(launch_pid, ["identity_unavailable"], 1)
+				require("alive=unknown" in diagnostic and "identity_unavailable" in diagnostic, label + " diagnostic does not claim death")
 		if int(case.request) > 0:
 			var route: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(work.path_join("route-receipt.json")))
 			require(str(route.get("case", "")) == label and int(route.get("authenticated_requests", 0)) >= int(case.request), label + " real authenticated route performed scheduled mutation")
@@ -79,7 +107,7 @@ func run() -> void:
 				require(result.transport.server_instance_id() == cap.instance_nonce, label + " authenticates exact instance")
 		else:
 			require(not result.has("transport") and not result.has("fingerprint"), label + " grants no authority")
-			if case.expected != "launch_replaced":
+			if case.expected not in ["launch_replaced", "launch_gone"]:
 				require(result.get("pending", false), label + " remains pending")
 		rows.append({"case": case.name, "reason": reason})
 	finish()

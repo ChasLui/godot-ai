@@ -1789,23 +1789,28 @@ func test_incompatible_server_body_uses_actionable_message() -> void:
 	assert_contains(body, "change both HTTP and WS ports")
 
 
-func test_incompatible_server_hides_http_only_port_picker() -> void:
-	## Incompatible godot-ai servers commonly hold both HTTP and WS ports.
-	## The quick picker only changes HTTP, so showing it here advertises a
-	## partial recovery path that can leave the editor disconnected.
+func test_foreign_incompatible_server_offers_both_port_picker() -> void:
 	_dock._build_ui()
 	_dock._update_crash_panel({
 		"state": McpServerState.INCOMPATIBLE,
 		"message": "Port 8000 is occupied by godot-ai server v1.2.10",
 	})
 	assert_true(_dock._crash_panel.visible, "diagnostic panel still shows")
-	assert_false(_dock._port_picker_panel.visible, "HTTP-only picker must stay hidden")
+	assert_true(_dock._port_picker_panel.visible, "both-port picker must offer a safe escape")
+	assert_false(_dock._crash_restart_btn.visible, "unproven ownership must not offer restart")
+	var spy := _SettingsApplySpy.new()
+	_dock.settings_apply_requested.connect(spy.on_apply)
+	_dock._port_picker_panel._spinbox.value = 23001
+	_dock._port_picker_panel._ws_spinbox.value = 23002
+	_dock._port_picker_panel._on_apply_pressed()
+	assert_eq(spy.captured, [{"changes": {"http_port": 23001, "ws_port": 23002}, "reload": true}])
+	_dock.settings_apply_requested.disconnect(spy.on_apply)
 
 
 func test_foreign_incompatible_body_names_concrete_free_ports() -> void:
 	## Issue #607 cheap version: the foreign-occupant crash body should hand
 	## the user concrete free ports (reservation-aware on Windows) and point
-	## them at Editor Settings + the client reconfigure, instead of leaving
+	## them at the two-port picker + client reconfigure, instead of leaving
 	## them to hunt for a port themselves. Names BOTH http and ws: this branch
 	## also fires for an incompatible godot-ai server that commonly holds both
 	## ports, so suggesting only http would leave the new server unable to
@@ -1821,10 +1826,9 @@ func test_foreign_incompatible_body_names_concrete_free_ports() -> void:
 		"foreign-occupant body must name a concrete free HTTP port")
 	assert_contains(body, "%d (WS)" % free_ws,
 		"foreign-occupant body must name a concrete free WS port")
-	assert_contains(body, "godot_ai/http_port",
-		"foreign-occupant body must point at the HTTP Editor Setting to change")
-	assert_contains(body, "godot_ai/ws_port",
-		"foreign-occupant body must point at the WS Editor Setting too")
+	assert_contains(body, "Apply + Reload", "guidance must point at the effective-pair picker")
+	assert_contains(body, "Configure", "clients need the new pair after reload")
+	assert_false(body.contains("godot_ai/http_port"), "legacy keys may be shadowed by a v4 pair")
 
 
 func test_recoverable_incompatible_body_keeps_restart_copy() -> void:
@@ -1878,6 +1882,8 @@ func test_recoverable_incompatible_hides_docs_link_button() -> void:
 	})
 	assert_false(_dock._crash_docs_btn.visible,
 		"recoverable case keeps Restart Server, not the docs link")
+	assert_false(_dock._port_picker_panel.visible, "owned recovery retains its restart path")
+	assert_true(_dock._crash_restart_btn.visible, "proven-owned server can be restarted")
 
 
 # --- Signal-emit contracts on the audit-v2 #360 extracted subpanels ---

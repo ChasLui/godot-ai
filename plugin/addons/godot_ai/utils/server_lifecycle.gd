@@ -854,9 +854,10 @@ func _effect_launch(payload: Dictionary) -> Dictionary:
 ## (#988, #1012 both surfaced as this bare sentence). Diagnostic only: the
 ## values are read once more after the capture budget and never grant
 ## authority.
-static func _launch_unproven_message(pid: int, attempts: Array, elapsed_ms: int) -> String:
-	var alive := PortResolver.pid_alive(pid)
-	var commandline := PortResolver.process_commandline(pid) if alive else ""
+func _launch_unproven_message(pid: int, attempts: Array, elapsed_ms: int) -> String:
+	var snapshot: Variant = _capture_process_snapshot(pid)
+	var alive := PortResolver.pid_alive(pid, snapshot)
+	var commandline := PortResolver.process_commandline(pid, snapshot) if alive else ""
 	if commandline.length() > 200:
 		commandline = commandline.substr(0, 199) + "…"
 	## Summarise the per-attempt refusals as "reason×count" in first-seen order.
@@ -878,10 +879,14 @@ static func _launch_unproven_message(pid: int, attempts: Array, elapsed_ms: int)
 		attempts.size(),
 		elapsed_ms / 1000.0,
 		pid,
-		"yes" if alive else "no",
+		"unknown" if PortResolver.capture_failed(snapshot) else ("yes" if alive else "no"),
 		", ".join(summary) if not summary.is_empty() else "none recorded",
 		"" if commandline.is_empty() else "; command: " + commandline,
 	]
+
+
+func _capture_process_snapshot(pid: int) -> Variant:
+	return PortResolver.capture_process_snapshot(pid)
 
 
 func _effect_prove(payload: Dictionary) -> Dictionary:
@@ -896,12 +901,14 @@ func _effect_prove(payload: Dictionary) -> Dictionary:
 	if OS.get_name() == "Windows" and launch_pid > 1:
 		hinted_pid = PortResolver.read_pid_file(str(payload.get("pid_file", "")))
 		if hinted_pid > 1:
-			first_snapshot = PortResolver.capture_process_snapshot(hinted_pid)
+			first_snapshot = _capture_process_snapshot(hinted_pid)
 			if PortResolver.process_descends_from(hinted_pid, launch_pid, first_snapshot):
 				launch_snapshot = first_snapshot
 	if launch_snapshot == null:
-		launch_snapshot = PortResolver.capture_process_snapshot(launch_pid)
+		launch_snapshot = _capture_process_snapshot(launch_pid)
 		first_snapshot = null
+	if PortResolver.capture_failed(launch_snapshot):
+		return {"pending": true, "reason": "identity_unavailable"}
 	var launch_alive := PortResolver.pid_alive(launch_pid, launch_snapshot)
 	var launch_fingerprint := (
 		PortResolver.process_fingerprint(launch_pid, launch_snapshot)
@@ -947,8 +954,10 @@ func _effect_prove(payload: Dictionary) -> Dictionary:
 		return {"pending": true, "reason": "listener_pid"}
 	if first_snapshot == null or pid != hinted_pid:
 		first_snapshot = (
-			launch_snapshot if pid == launch_pid else PortResolver.capture_process_snapshot(pid)
+			launch_snapshot if pid == launch_pid else _capture_process_snapshot(pid)
 		)
+	if PortResolver.capture_failed(first_snapshot):
+		return {"pending": true, "reason": "identity_unavailable"}
 	if not PortResolver.pid_cmdline_is_godot_ai(pid, first_snapshot):
 		return {"pending": true, "reason": "process_brand"}
 	if not PortResolver.process_descends_from(pid, launch_pid, first_snapshot):
@@ -962,7 +971,9 @@ func _effect_prove(payload: Dictionary) -> Dictionary:
 	## fingerprint must remain unchanged after the final probe.
 	var final_capability := _read_capability(port)
 	var final_live := _probe_with_capability(port, final_capability, int(payload.timeout_ms))
-	var final_snapshot: Variant = PortResolver.capture_process_snapshot(pid)
+	var final_snapshot: Variant = _capture_process_snapshot(pid)
+	if PortResolver.capture_failed(final_snapshot):
+		return {"pending": true, "reason": "identity_unavailable"}
 	if (
 		PortResolver.read_pid_file(str(payload.get("pid_file", ""))) != pid
 		or not PortResolver.find_all_pids_on_port(port).has(pid)

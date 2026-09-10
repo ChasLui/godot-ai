@@ -26,6 +26,8 @@ var _had_http_port_setting := false
 var _saved_http_port: Variant = null
 var _had_ws_port_setting := false
 var _saved_ws_port: Variant = null
+var _had_v4_endpoint_ports := false
+var _saved_v4_endpoint_ports: Variant = null
 ## Same reason as the ports: these tests drive godot_ai/mcp_client_scope
 ## through its valid and invalid values and must not leave the editor
 ## registering at a scope the user never chose.
@@ -69,6 +71,11 @@ func suite_setup(_ctx: Dictionary) -> void:
 		_had_ws_port_setting = es.has_setting(McpClientConfigurator.SETTING_WS_PORT)
 		if _had_ws_port_setting:
 			_saved_ws_port = es.get_setting(McpClientConfigurator.SETTING_WS_PORT)
+		_had_v4_endpoint_ports = es.has_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS)
+		if _had_v4_endpoint_ports:
+			_saved_v4_endpoint_ports = es.get_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS)
+			if _saved_v4_endpoint_ports is Dictionary or _saved_v4_endpoint_ports is Array:
+				_saved_v4_endpoint_ports = _saved_v4_endpoint_ports.duplicate(true)
 		_had_client_scope_setting = es.has_setting(McpSettings.SETTING_CLIENT_SCOPE)
 		if _had_client_scope_setting:
 			_saved_client_scope = es.get_setting(McpSettings.SETTING_CLIENT_SCOPE)
@@ -5640,6 +5647,7 @@ func _clear_port_settings() -> void:
 	var es := EditorInterface.get_editor_settings()
 	if es == null:
 		return
+	es.erase(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS)
 	es.set_setting(McpSettings.SETTING_HTTP_PORT, McpClientConfigurator.DEFAULT_HTTP_PORT)
 	es.set_setting(McpClientConfigurator.SETTING_WS_PORT, McpClientConfigurator.DEFAULT_WS_PORT)
 
@@ -5656,6 +5664,13 @@ func _restore_port_settings() -> void:
 		es.set_setting(McpClientConfigurator.SETTING_WS_PORT, _saved_ws_port)
 	elif es.has_setting(McpClientConfigurator.SETTING_WS_PORT):
 		es.erase(McpClientConfigurator.SETTING_WS_PORT)
+	if _had_v4_endpoint_ports:
+		var saved: Variant = _saved_v4_endpoint_ports
+		if saved is Dictionary or saved is Array:
+			saved = saved.duplicate(true)
+		es.set_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS, saved)
+	else:
+		es.erase(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS)
 	_restore_client_scope()
 
 

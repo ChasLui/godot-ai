@@ -144,10 +144,15 @@ def test_optional_v4_endpoint_pair_preserves_legacy_and_refuses_malformed(tmp_pa
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows reservation query")
-@pytest.mark.parametrize("query_fails", [False, True])
+@pytest.mark.parametrize("query_fails,bindable", [
+    pytest.param(False, True, id="reserved-range"),
+    pytest.param(True, False, id="failed-query-occupied"),
+    pytest.param(True, True, id="failed-query-two-free"),
+])
 def test_major_upgrade_skips_reserved_ranges_without_repeated_failed_queries(
     tmp_path: Path,
     query_fails: bool,
+    bindable: bool,
 ) -> None:
     godot = godot_bin_or_skip()
     project = tmp_path / "reserved-range"
@@ -209,10 +214,10 @@ func run() -> void:
                 held.clear()
         else:
             pytest.fail("No free test port range available")
-        if not query_fails:
-            # Only the two permissible candidates are made bindable.
+        if bindable:
+            # The failed query still reaches the final recheck of both ports.
             held[1].close()
-            held[102].close()
+            held[2 if query_fails else 102].close()
         environment.update(PORT_BASE=str(base), EXCLUDED_TABLE=f"{base + 2} {base + 101}")
         log = run_godot_editor(
             project,
@@ -226,9 +231,71 @@ func run() -> void:
             probe.close()
     assert "SCRIPT ERROR" not in log, log
     result = json.loads((project / "result.json").read_bytes())
-    if query_fails:
+    if not bindable:
         assert not result["ok"] and not result["present"], result
     else:
         assert result["ok"] and result["present"], result
-        assert (result["http_port"], result["ws_port"]) == (base + 1, base + 102), result
+        expected_pair = (base + 1, base + (2 if query_fails else 102))
+        assert (result["http_port"], result["ws_port"]) == expected_pair, result
     assert result["queries"] == 1, result
+
+
+def test_client_port_suite_restores_absent_valid_and_malformed_v4_settings(tmp_path: Path) -> None:
+    project = tmp_path / "client-port-suite"
+    shutil.copytree(PLUGIN_ROOT, project / "addons/godot_ai")
+    shutil.copyfile(
+        PLUGIN_ROOT.parents[2] / "test_project/tests/test_clients.gd", project / "client_suite.gd",
+    )
+    (project / "project.godot").write_text(
+        'config_version=5\n[autoload]\nDriver="*res://driver.gd"\n', encoding="utf-8",
+    )
+    (project / "driver.gd").write_text('''@tool
+extends Node
+const Suite = preload("res://client_suite.gd")
+const Config = preload("res://addons/godot_ai/client_configurator.gd")
+func _ready() -> void:
+    if Engine.is_editor_hint(): run.call_deferred()
+func run() -> void:
+    var settings := EditorInterface.get_editor_settings()
+    var rows := []
+    for seed in [null, {"http_port": 18231, "ws_port": 19231},
+            {"http_port": "malformed", "nested": [1, 2]}]:
+        if seed == null:
+            settings.erase(Config.SETTING_V4_ENDPOINT_PORTS)
+        else:
+            settings.set_setting(Config.SETTING_V4_ENDPOINT_PORTS, seed.duplicate(true))
+        var suite = Suite.new()
+        suite.suite_setup({})
+        if seed != null:
+            var live: Dictionary = settings.get_setting(Config.SETTING_V4_ENDPOINT_PORTS)
+            live["http_port"] = 18299
+        suite.test_http_port_defaults_when_setting_absent()
+        suite.test_ws_port_defaults_when_setting_absent()
+        suite.test_http_port_reads_configured_value()
+        suite.test_ws_port_reads_configured_value()
+        suite.suite_teardown()
+        var present := settings.has_setting(Config.SETTING_V4_ENDPOINT_PORTS)
+        rows.append({"seed": seed, "present": present,
+            "restored": settings.get_setting(Config.SETTING_V4_ENDPOINT_PORTS) if present else null,
+            "failed": suite._failed, "message": suite._message,
+            "assertions": suite._assertion_count})
+    var file := FileAccess.open("res://result.json", FileAccess.WRITE)
+    file.store_string(JSON.stringify(rows))
+    file.close()
+    get_tree().quit()
+''', encoding="utf-8")
+    environment = {"GODOT_AI_DISABLE_TELEMETRY": "true"}
+    for key in ("APPDATA", "LOCALAPPDATA", "HOME", "XDG_CONFIG_HOME"):
+        directory = tmp_path / key.lower()
+        directory.mkdir()
+        environment[key] = str(directory)
+    log = run_godot_editor(
+        project, godot_bin_or_skip(), allow_headless=True, environment=environment,
+    )
+    assert "SCRIPT ERROR" not in log, log
+    rows = json.loads((project / "result.json").read_bytes())
+    assert len(rows) == 3, rows
+    for row in rows:
+        assert not row["failed"] and row["assertions"] >= 6, row
+        assert row["present"] == (row["seed"] is not None), row
+        assert row["restored"] == row["seed"], row
