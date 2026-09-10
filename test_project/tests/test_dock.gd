@@ -737,10 +737,11 @@ func test_post_update_retry_button_emits_barrier_action_instead_of_a_second_upda
 	dock.free()
 
 
-func test_update_confirmation_names_editor_restart_and_client_compatibility() -> void:
+func test_update_confirmation_preserves_editor_and_names_client_compatibility() -> void:
 	var text := McpDockScript.update_confirm_text("4.1.0", "4.0.4")
-	assert_true(text.contains("save your project"), text)
-	assert_true(text.contains("restart the Godot editor"), text)
+	assert_true(text.contains("Open scenes and unsaved changes stay in place"), text)
+	assert_true(text.contains("AI tools briefly disconnect"), text)
+	assert_false(text.contains("restart the Godot editor"), text)
 	assert_true(text.contains("Godot AI v4.1.0"), text)
 	assert_true(text.contains("AI clients already using v4.0.4 can reconnect without restarting."), text)
 	assert_true(text.contains("Relaunch clients still using an older version."), text)
@@ -756,7 +757,7 @@ func test_update_dialog_defers_until_confirmation() -> void:
 	dock._build_ui()
 	var update_calls := [0]
 	dock.update_requested.connect(func() -> void: update_calls[0] += 1)
-	assert_eq(dock._update_confirm.get_ok_button().text, "Update and restart")
+	assert_eq(dock._update_confirm.get_ok_button().text, "Update plugin")
 	assert_eq(dock._update_confirm.get_cancel_button().text, "Later")
 	dock._update_confirm.canceled.emit()
 	assert_eq(update_calls[0], 0, "Later must leave the update unrequested")

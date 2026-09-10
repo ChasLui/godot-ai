@@ -2100,7 +2100,7 @@ func _build_tools_tab(tabs: TabContainer) -> void:
 
 	_update_confirm = ConfirmationDialog.new()
 	_update_confirm.title = "Update Godot AI?"
-	_update_confirm.ok_button_text = "Update and restart"
+	_update_confirm.ok_button_text = "Update plugin"
 	_update_confirm.cancel_button_text = "Later"
 	_update_confirm.confirmed.connect(_on_update_confirmed)
 	add_child(_update_confirm)
@@ -2742,10 +2742,8 @@ func _on_update_pressed() -> void:
 	if not _post_update_action.is_empty():
 		post_update_action_requested.emit(_post_update_action)
 		return
-	## The update saves every open scene, swaps the add-on tree and relaunches
-	## the editor (docs/self-update.md, step 8). Ask before doing that to a
-	## user's session. A dock that is not in a scene tree has no dialog to
-	## show and proceeds directly.
+	## Updating briefly disconnects AI tools while the add-on is replaced.
+	## A dock outside the scene tree has no dialog and proceeds directly.
 	if _update_confirm != null and is_inside_tree():
 		_update_confirm.dialog_text = update_confirm_text(
 			_update_candidate_version, ClientConfigurator.get_plugin_version()
@@ -2767,7 +2765,7 @@ static func update_confirm_text(version: String, current_version: String) -> Str
 		else "Quit and relaunch connected AI clients after the update."
 	)
 	return (
-		"This will save your project and restart the Godot editor to install %s.\n\n%s"
+		"Install %s in this editor? Open scenes and unsaved changes stay in place. AI tools briefly disconnect while the plugin reloads.\n\n%s"
 	) % [target, clients]
 
 

@@ -373,11 +373,19 @@ def test_cli_preparation_never_uses_parent_client_or_capability_paths(tmp_path: 
     assert fixture["capability_dir"].is_dir()
 
 
+@pytest.mark.parametrize("same_editor", [False, True])
 def test_launch_passes_isolation_only_to_godot_child(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_editor: bool
 ) -> None:
     smoke = load_smoke_script()
     project = tmp_path / "self-update-smoke"
+    addon = project / "addons/godot_ai"
+    addon.mkdir(parents=True)
+    (addon / "plugin.gd").write_text(
+        'const RUNNER = "update_activation_runner.gd"\n'
+        if same_editor else "extends EditorPlugin\n",
+        encoding="utf-8",
+    )
     godot = tmp_path / "Godot"
     godot.write_text("not executed\n", encoding="utf-8")
     parent_home = tmp_path / "parent-home"
@@ -391,17 +399,25 @@ def test_launch_passes_isolation_only_to_godot_child(
     captured: dict[str, Any] = {}
 
     class FakeGodot:
+        pid = 1234
         stdout = iter(
             [
                 f"{smoke.SMOKE_STAGED_LOG}\n",
                 "MCP | stopped server (PID [123])\n",
-                "MCP | update to 4.0.1 swapped in; restarting the editor\n",
+                f"MCP | update to 4.0.1 {smoke.IN_EDITOR_SWAP_LOG_SUFFIX}\n"
+                if same_editor else "MCP | update to 4.0.1 swapped in; restarting the editor\n",
+                f"{smoke.IN_EDITOR_COMPLETED_LOG}1234\n" if same_editor else "",
+                smoke.SMOKE_MIGRATED_LOG + "\n" if same_editor else "",
             ]
         )
 
         @staticmethod
         def wait() -> int:
             return 0
+
+        @staticmethod
+        def poll() -> int | None:
+            return None if same_editor else 0
 
     def fake_popen(command: list[str], **kwargs: Any) -> FakeGodot:
         captured["command"] = command
@@ -756,6 +772,44 @@ def test_smoke_restart_requested_needs_the_swap_line() -> None:
     assert smoke.vnext_exit_tree_during_update(before_swap + [smoke.SMOKE_TRIGGER_LOG])
 
 
+@pytest.mark.parametrize("reported_pid", [123, 124])
+def test_in_editor_wait_requires_original_process(
+    monkeypatch: pytest.MonkeyPatch, reported_pid: int
+) -> None:
+    smoke = load_smoke_script()
+    lines = [
+        smoke.SMOKE_STAGED_LOG,
+        f"{smoke.IN_EDITOR_COMPLETED_LOG}{reported_pid}",
+        smoke.SMOKE_MIGRATED_LOG,
+    ]
+
+    class Editor:
+        pid = 123
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    ticks = iter([0.0, 121.0])
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: next(ticks))
+    assert smoke.wait_for_in_editor_activation(Editor(), lines) is (reported_pid == 123)
+
+
+def test_in_editor_wait_bounds_a_failure_before_swap(monkeypatch: pytest.MonkeyPatch) -> None:
+    smoke = load_smoke_script()
+
+    class Editor:
+        pid = 123
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    ticks = iter([0.0, 121.0])
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: next(ticks))
+    assert not smoke.wait_for_in_editor_activation(Editor(), [smoke.V3_BRIDGE_HANDOFF_LOG])
+
+
 def test_status_reports_live_version_requires_name_and_pin() -> None:
     smoke = load_smoke_script()
     assert not smoke.status_reports_live_version(None, "3.2.4")
@@ -914,10 +968,18 @@ def test_verify_post_run_requires_live_status(
     assert "post-update /godot-ai/status was not live" in captured
 
 
-def test_verify_post_run_accepts_live_status(
+@pytest.mark.parametrize("diagnostic", [
+    None,
+    "SCRIPT ERROR: Compile Error: Failed to compile depended scripts.",
+    'ERROR: Failed to load script "res://addons/godot_ai/plugin.gd".',
+    "ERROR: Attempt to open script 'res://addons/godot_ai/migration_bridge.gd' "
+    "resulted in error 'File not found'.",
+])
+def test_verify_post_run_accepts_live_status_only_without_script_errors(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
+    diagnostic: str | None,
 ) -> None:
     smoke = load_smoke_script()
     project = _minimal_smoke_project(tmp_path, "4.0.1")
@@ -934,6 +996,8 @@ def test_verify_post_run_accepts_live_status(
         "MCP | client migration completed",
         "MCP | plugin loaded",
     ]
+    if diagnostic is not None:
+        lines.insert(-1, diagnostic)
     ok = smoke.verify_post_run(
         project,
         "4.0.1",
@@ -944,7 +1008,9 @@ def test_verify_post_run_accepts_live_status(
         next_server_version="4.0.0",
     )
     captured = capsys.readouterr().out
-    assert ok is True
+    assert ok is (diagnostic is None)
+    if diagnostic is not None:
+        assert f"FAIL: editor script diagnostic: {diagnostic}" in captured
     assert "PASS: post-update /godot-ai/status live v4.0.0" in captured
 
 

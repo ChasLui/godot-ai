@@ -54,6 +54,9 @@ SMOKE_STAGED_LOG = "MCP | self-update smoke: staged signed local bundle"
 # tree (docs/self-update.md); nothing of it lives outside the project.
 UPDATE_STATE_DIR = "addons/.godot_ai_update"
 SMOKE_SWAP_LOG_SUFFIX = "swapped in; restarting the editor"
+IN_EDITOR_SWAP_LOG_SUFFIX = "swapped in; reloading the plugin in this editor"
+IN_EDITOR_COMPLETED_LOG = "MCP | update activation completed in editor PID "
+V3_BRIDGE_HANDOFF_LOG = "MCP | v3 bridge handing verified tree to in-editor activation"
 SMOKE_MIGRATED_LOG = "MCP | client migration completed"
 RESTARTED_EDITOR_LOG_NAME = "godot-editor-restarted.log"
 RESTARTED_EDITOR_TIMEOUT_SECONDS = 120.0
@@ -78,6 +81,7 @@ CAPSULE_ONLY_ENTRIES = (
 CAPSULE_INSTALLER_SCRIPTS = (
     "release_verifier.gd",
     "update_installer.gd",
+    "update_activation_runner.gd",
     "port_resolver.gd",
     "windows_port_reservation.gd",
 )
@@ -1261,16 +1265,17 @@ def print_instructions(
     print("Manual step:")
     print("  1. In the Godot AI dock, click Update, then confirm the update dialog.")
     print("  2. The editor verifies, stages and swaps the bundle, prints")
-    print(f"     '... {SMOKE_SWAP_LOG_SUFFIX}' and restarts itself. Nothing else to click.")
-    print(f"  3. The restarted editor verifies the tree, prints '{SMOKE_MIGRATED_LOG}',")
+    print("     its activation result. The new updater keeps this editor open;")
+    print("     a published 4.0.4 updater still restarts on its first update.")
+    print(f"  3. The activated plugin verifies the tree, prints '{SMOKE_MIGRATED_LOG}',")
     print("     shows the update as complete in the dock, and brings the server back")
     print("     at the new version.")
-    print("  4. This script waits for that restarted editor, checks disk state, /godot-ai/status")
+    print("  4. This script checks the expected editor continuity, disk state, /godot-ai/status")
     print("     and .ips files, then leaves the editor open for inspection.")
     print("")
     print("Failure signals:")
     print("  - Godot exits without the swap line, exits non-zero, or a new Godot*.ips appears.")
-    print("  - The restarted editor never prints the migration line, or its server is not")
+    print("  - The activated plugin never prints the migration line, or its server is not")
     print("    listening at the new version.")
     print("  - The update marker does not record success, or the retained backup is missing.")
     print("  - 'MCP | [self-update-smoke vnext _exit_tree]' prints before the swap.")
@@ -1293,6 +1298,9 @@ def launch_and_verify(
     if godot_path is None or not Path(godot_path).exists():
         raise HarnessError(f"Godot executable not found: {godot_bin}")
 
+    same_editor = "update_activation_runner.gd" in (
+        project_dir / "addons/godot_ai/plugin.gd"
+    ).read_text(encoding="utf-8")
     started = time.time()
     log_path = project_dir / ".godot-ai-self-update-smoke" / "godot-editor.log"
     child_environment = os.environ.copy()
@@ -1316,24 +1324,25 @@ def launch_and_verify(
     )
     lines: list[str] = []
     assert proc.stdout is not None
-    for line in proc.stdout:
-        print(line, end="")
-        lines.append(line.rstrip("\n"))
-    code = proc.wait()
-    if code != 0:
-        print(f"FAIL: Godot exited with code {code}")
-        print_new_reports(baseline, started, Path(godot_path))
-        return code or 1
-    if not smoke_restart_requested(lines):
-        print("FAIL: the editor closed before an update was swapped in (click Update in the dock)")
-        return 1
-
-    ## The swapping editor is gone; the one it restarted into verifies the
-    ## tree, repins clients and starts the new server. Its log is forwarded
-    ## by patch_restart_log; wait for it there, then for the live server.
-    restarted_log = project_dir / ".godot-ai-self-update-smoke" / RESTARTED_EDITOR_LOG_NAME
-    restarted_lines = wait_for_restarted_editor(restarted_log)
-    lines.extend(restarted_lines)
+    drain = threading.Thread(target=_drain_editor_output, args=(proc.stdout, lines), daemon=True)
+    drain.start()
+    if same_editor:
+        if not wait_for_in_editor_activation(proc, lines):
+            print("FAIL: the original editor did not complete in-editor activation")
+            print_new_reports(baseline, started, Path(godot_path))
+            return 1
+    else:
+        code = proc.wait()
+        drain.join()
+        if code != 0:
+            print(f"FAIL: Godot exited with code {code}")
+            print_new_reports(baseline, started, Path(godot_path))
+            return code or 1
+        if not smoke_restart_requested(lines):
+            print("FAIL: the editor closed before an update was swapped in (click Update)")
+            return 1
+        restarted_log = project_dir / ".godot-ai-self-update-smoke" / RESTARTED_EDITOR_LOG_NAME
+        lines.extend(wait_for_restarted_editor(restarted_log))
     post_update_status = wait_for_live_status(
         http_port,
         next_server_version,
@@ -1351,8 +1360,12 @@ def launch_and_verify(
         post_update_status=post_update_status,
         next_server_version=next_server_version,
         godot_path=Path(godot_path),
+        same_editor_pid=proc.pid if same_editor else None,
     )
-    print("The restarted editor stays open for inspection; close it when you are done.")
+    if same_editor and proc.poll() is not None:
+        print("FAIL: the original editor exited during verification")
+        ok = False
+    print("The editor stays open for inspection; close it when you are done.")
     return 0 if ok else 1
 
 
@@ -1643,8 +1656,8 @@ def print_v3_instructions(
     print("Manual step:")
     print(f"  1. In the v{from_version} Godot AI dock, click Update.")
     print("  2. v3's own updater extracts the capsule; the bridge verifies, stages and swaps")
-    print(f"     the v4 tree, prints '{V3_BRIDGE_RESTART_LOG}' and restarts the editor.")
-    print(f"  3. The restarted v4 editor verifies the tree, prints '{SMOKE_MIGRATED_LOG}',")
+    print("     the v4 tree and reloads the plugin in the same editor process.")
+    print(f"  3. The v4 plugin verifies the tree, prints '{SMOKE_MIGRATED_LOG}',")
     print("     repins the isolated Codex entry and starts the local server.")
     print("  4. This script waits for that editor, checks disk state, /godot-ai/status and")
     print("     .ips files, then leaves the editor open for inspection.")
@@ -1695,10 +1708,11 @@ def launch_and_verify_v3_crossing(
     drain = threading.Thread(target=_drain_editor_output, args=(proc.stdout, lines), daemon=True)
     drain.start()
     refusal = floor_forced_unmet()
-    while proc.poll() is None:
-        if refusal and _restored_final_v3_loaded(lines):
-            break
-        time.sleep(POST_UPDATE_STATUS_POLL_SECONDS)
+    if refusal:
+        while proc.poll() is None:
+            if _restored_final_v3_loaded(lines):
+                break
+            time.sleep(POST_UPDATE_STATUS_POLL_SECONDS)
     if refusal and proc.poll() is None:
         ## The refusal never restarts the editor: final v3 is restored and
         ## re-enabled in place, so verify while that editor stays open.
@@ -1707,20 +1721,17 @@ def launch_and_verify_v3_crossing(
         )
         print("The editor stays open with the restored final v3; close it when you are done.")
         return 0 if ok else 1
-    drain.join()
-    code = proc.wait()
-    if code != 0:
-        print(f"FAIL: Godot exited with code {code}")
+    if proc.poll() is not None:
+        drain.join()
+        print(f"FAIL: original Godot exited ({proc.returncode}); expected in-editor crossing")
         print_new_reports(baseline, started, Path(godot_path))
-        return code or 1
+        return 1
     if refusal:
         print("FAIL: the editor closed before the capsule restored final v3 (click Update)")
         return 1
-    if not any(V3_BRIDGE_RESTART_LOG in line for line in lines):
-        print("FAIL: the editor closed before the capsule swapped the v4 tree in (click Update)")
+    if not wait_for_in_editor_activation(proc, lines):
+        print("FAIL: the original editor did not complete capsule activation")
         return 1
-    restarted_lines = wait_for_restarted_editor(marker_dir / RESTARTED_EDITOR_LOG_NAME)
-    lines.extend(restarted_lines)
     post_update_status = None
     try:
         selected_ports = fixture_client_ports(project_dir, target_version)
@@ -1747,8 +1758,12 @@ def launch_and_verify_v3_crossing(
         lines,
         post_update_status=post_update_status,
         godot_path=Path(godot_path),
+        same_editor_pid=proc.pid,
     )
-    print("The restarted editor stays open for inspection; close it when you are done.")
+    if proc.poll() is not None:
+        print("FAIL: the original editor exited during verification")
+        ok = False
+    print("The original editor stays open for inspection; close it when you are done.")
     return 0 if ok else 1
 
 
@@ -1792,8 +1807,9 @@ def verify_v3_crossing(
     *,
     post_update_status: dict | None,
     godot_path: Path | None = None,
+    same_editor_pid: int | None = None,
 ) -> bool:
-    ok = True
+    ok = verify_script_diagnostics(lines)
     live = project_dir / "addons" / "godot_ai"
     installed = read_plugin_version(live / "plugin.cfg")
     if installed == target_version:
@@ -1802,12 +1818,16 @@ def verify_v3_crossing(
         print(f"FAIL: plugin version is {installed}, expected {target_version}")
         ok = False
 
+    activation_steps = (
+        (V3_BRIDGE_HANDOFF_LOG, IN_EDITOR_SWAP_LOG_SUFFIX)
+        if same_editor_pid is not None
+        else ("MCP | v3 bridge swapping in the verified canonical v4 tree", V3_BRIDGE_RESTART_LOG)
+    )
     expected_order = (
         V3_CLICK_LOG,
         "MCP | self-update release signature verified",
         "MCP | update runner disabling old plugin",
-        "MCP | v3 bridge swapping in the verified canonical v4 tree",
-        V3_BRIDGE_RESTART_LOG,
+        *activation_steps,
         SMOKE_MIGRATED_LOG,
         "MCP | plugin loaded",
     )
@@ -1823,7 +1843,10 @@ def verify_v3_crossing(
         print(f"FAIL: crossing log is missing or out of order at {missing!r}")
         ok = False
     else:
-        print("PASS: click, extract, swap, restart and client migration logged in order")
+        print("PASS: click, extract, swap, activation and client migration logged in order")
+    if same_editor_pid is not None and not smoke_in_editor_completed(lines, same_editor_pid):
+        print("FAIL: activation did not complete in the original editor PID")
+        ok = False
     if any("Failed to create an autoload" in line for line in lines):
         print("FAIL: an autoload failed to load during the crossing (#946)")
         ok = False
@@ -1850,8 +1873,6 @@ def verify_v3_crossing(
     leftovers = [
         name
         for name in (
-            "migration_bridge.gd",
-            "migration_coordinator.gd",
             "update_reload_runner.gd",
             "migration_payload",
         )
@@ -1861,7 +1882,7 @@ def verify_v3_crossing(
         print(f"FAIL: live tree still carries {leftovers}")
         ok = False
     else:
-        print("PASS: live tree is the canonical v4 tree (no bridge, runner or payload)")
+        print("PASS: live tree has no capsule payload or legacy update runner")
 
     codex_config = fixture_environment_paths(project_dir)["codex_home"] / "config.toml"
     config_text = codex_config.read_text(encoding="utf-8") if codex_config.is_file() else ""
@@ -2037,8 +2058,9 @@ def verify_post_run(
     post_update_status: dict | None,
     next_server_version: str,
     godot_path: Path | None = None,
+    same_editor_pid: int | None = None,
 ) -> bool:
-    ok = True
+    ok = verify_script_diagnostics(lines)
     installed_version = read_plugin_version(project_dir / "addons" / "godot_ai" / "plugin.cfg")
     if installed_version == next_version:
         print(f"PASS: plugin version advanced to {installed_version}")
@@ -2062,10 +2084,15 @@ def verify_post_run(
     else:
         print("PASS: vNext _exit_tree trigger did not run before the swap")
 
-    if smoke_restart_requested(lines) and any(SMOKE_MIGRATED_LOG in line for line in lines):
-        print("PASS: the editor restarted and the restarted editor completed client migration")
+    activated = (
+        smoke_in_editor_completed(lines, same_editor_pid)
+        if same_editor_pid is not None
+        else smoke_restart_requested(lines)
+    )
+    if activated and any(SMOKE_MIGRATED_LOG in line for line in lines):
+        print("PASS: expected editor activation and client migration completed")
     else:
-        print("FAIL: no swap-and-restart followed by client migration in the logs")
+        print("FAIL: expected editor activation or client migration is missing")
         ok = False
 
     if smoke_adopted_existing_server_before_update(lines):
@@ -2118,6 +2145,20 @@ def verify_post_run(
     return ok
 
 
+def verify_script_diagnostics(lines: list[str]) -> bool:
+    failures = [
+        line for line in lines
+        if any(marker in line for marker in (
+            "SCRIPT ERROR", "Parse Error", "Compile Error",
+            "ERROR: Failed to load script", "Failed to create an autoload",
+            "ERROR: Attempt to open script",
+        ))
+    ]
+    for line in failures:
+        print(f"FAIL: editor script diagnostic: {line}")
+    return not failures
+
+
 def verify_lean_update_state(project_dir: Path, next_version: str) -> tuple[dict, Path]:
     """Check the on-disk state one successful update leaves (docs/self-update.md)."""
     project = project_dir.resolve(strict=True)
@@ -2157,13 +2198,38 @@ def smoke_restart_requested(lines: list[str]) -> bool:
     return any(smoke_swap_line(line) for line in lines)
 
 
+def smoke_in_editor_completed(lines: list[str], pid: int) -> bool:
+    return any(line.strip() == f"{IN_EDITOR_COMPLETED_LOG}{pid}" for line in lines)
+
+
+def wait_for_in_editor_activation(proc: subprocess.Popen, lines: list[str]) -> bool:
+    """Wait for the operator, then bound activation in the original child process."""
+    deadline = None
+    while proc.poll() is None:
+        snapshot = list(lines)
+        if deadline is None and any(
+            marker in line
+            for line in snapshot
+            for marker in (SMOKE_STAGED_LOG, V3_CLICK_LOG, V3_BRIDGE_HANDOFF_LOG)
+        ):
+            deadline = time.monotonic() + RESTARTED_EDITOR_TIMEOUT_SECONDS
+        if smoke_in_editor_completed(snapshot, proc.pid) and any(
+            SMOKE_MIGRATED_LOG in line for line in snapshot
+        ):
+            return True
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
+        time.sleep(POST_UPDATE_STATUS_POLL_SECONDS)
+    return False
+
+
 def vnext_exit_tree_during_update(lines: list[str]) -> bool:
     """True when the vNext trigger ran in the update window (staged, not yet swapped)."""
     staged = False
     for line in lines:
         if SMOKE_STAGED_LOG in line:
             staged = True
-        if staged and smoke_swap_line(line):
+        if staged and (smoke_swap_line(line) or IN_EDITOR_SWAP_LOG_SUFFIX in line):
             return False
         if staged and SMOKE_TRIGGER_LOG in line:
             return True

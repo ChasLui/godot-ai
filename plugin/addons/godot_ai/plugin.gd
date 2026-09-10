@@ -930,9 +930,10 @@ func _finish_post_update() -> void:
 	var recorded := UpdateInstaller.record_clients_migrated()
 	if recorded != OK:
 		push_warning("MCP | could not record client migration in the update marker: %s" % error_string(recorded))
-	## Backups are named by the version they hold: keep the one this update
-	## just retained (the previous version) and drop older ones.
-	UpdateInstaller.prune_backups(str(_post_update_outcome.get("from_version", "")))
+	## In-editor updates retain old script graphs for undo. Keep their backing
+	## files until a fresh editor process can safely prune older generations.
+	if not get_tree().root.has_meta("godot_ai_retained_update_scripts"):
+		UpdateInstaller.prune_backups(str(_post_update_outcome.get("from_version", "")))
 	_post_update_replaced_version = str(_post_update_outcome.get("from_version", ""))
 	_post_update_reprobes_left = POST_UPDATE_REPROBE_LIMIT
 	_post_update_stale_reprobes_left = POST_UPDATE_STALE_REPROBE_LIMIT
@@ -1561,7 +1562,7 @@ static func _remove_tree(path: String) -> void:
 	DirAccess.remove_absolute(path)
 
 
-## Verify, stage, quiesce, swap, restart. Every check runs in this editor
+## Verify, stage, quiesce, then hand activation to an independent runner. Every check runs in this editor
 ## against the downloaded bytes; nothing outside the editor is executed. The
 ## live tree is touched only by the two renames inside `swap`, and only after
 ## the staged tree has been re-hashed against the signed manifest.
@@ -1629,31 +1630,31 @@ func install_downloaded_update(package: Dictionary) -> void:
 		"editor_nonce": Crypto.new().generate_random_bytes(16).hex_encode(),
 		"replace_owned_mismatches": false,
 	}
-	var swapped: Dictionary = UpdateInstaller.swap(
-		str(staged.get("stage_root", "")), LIVE_ADDON_ROOT, record
+	## Compile an independent script with no resource path. Loading this as a
+	## normal Script would let the filesystem scan replace our live runner.
+	var runner_script := GDScript.new()
+	runner_script.source_code = FileAccess.get_file_as_string(
+		"res://addons/godot_ai/utils/update_activation_runner.gd"
 	)
-	if not bool(swapped.get("ok", false)):
-		var refused := "update swap refused: %s" % str(swapped.get("error", ""))
-		if not FileAccess.file_exists(PLUGIN_CFG):
-			_fail_update(
-				"Update failed — repair required",
-				refused + "; the previous tree is not live: run `script/v4-release install` or restore the backup by hand",
-			)
-			return
+	if runner_script.source_code.is_empty() or runner_script.reload() != OK:
 		UpdateInstaller.discard_stage()
-		_fail_update("Update failed — previous version kept", refused)
-		## Quiescence already stopped the server and cleared the dispatcher;
-		## the old tree is still live, so rebuild the plugin from it.
+		_fail_update("Update cancelled safely", "could not compile the independent activation runner")
 		_reload_plugin_after_failed_update()
 		return
+	var runner = runner_script.new()
+	get_tree().root.add_child(runner)
+	if not runner.start({"stage_root": str(staged.get("stage_root", "")), "record": record}):
+		var refusal_reason := str(runner.refusal_reason)
+		runner.queue_free()
+		UpdateInstaller.discard_stage()
+		_fail_update("Update cancelled safely", refusal_reason)
+		_reload_plugin_after_failed_update()
+		return
+	## The runner now owns the lock. Teardown's cancellation signal must not
+	## release it before the deferred disable/drain/swap sequence completes.
 	_update_swapped = true
-	## The lock covered download, stage and swap. From here the marker itself
-	## refuses a second update until the restarted editor verifies the tree,
-	## and that editor cannot prove this process dead, so release it now.
-	UpdateInstaller.release_lock()
-	UpdateInstaller.persist_next_start_enabled(PLUGIN_CFG)
-	print("MCP | update to %s swapped in; restarting the editor" % to_version)
-	UpdateInstaller.request_restart.call_deferred()
+	## Return: no frame of this plugin may be suspended across source replacement.
+
 
 
 ## Name the activation phase in the dock and let it repaint before the

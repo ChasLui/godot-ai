@@ -140,6 +140,21 @@ tools create disposable signing/TLS fixtures and exercise the CI shell helpers.
 
 ## Verify lifecycle and updates throughout implementation
 
+Close each disposable editor when its test is finished. Preserve logs and
+receipts, inspect the final screenshot, then request a normal exit and verify
+that the exact process has stopped. Match both its project path and process
+creation identity before closing it. Discard only known smoke-test mutations;
+leave user editors and unsaved user work alone. Release test-owned client
+connections normally, and keep only editors needed for active checks running.
+After exit, remove disposable generated caches from the verified fixture paths.
+Keep source snapshots, logs, receipts, and the small evidence needed to explain
+failures; do not retain entire thumbnail/import caches as test evidence. Never
+clean a live fixture or a user's settings/cache directories.
+
+Keep isolated settings and caches outside the Godot project, or create a
+`.gdignore` in their directory before the first editor launch. Otherwise Godot
+can import its own thumbnail cache and produce misleading scan/load timings.
+
 Run a visible Godot editor before and after each meaningful lifecycle or update
 change. Load real scenes and exercise handlers before testing recovery or an
 update. A clean startup with no handlers loaded does not cover retained script
