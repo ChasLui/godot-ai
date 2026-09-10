@@ -3,6 +3,7 @@
 import json
 import shutil
 import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -140,3 +141,94 @@ def test_optional_v4_endpoint_pair_preserves_legacy_and_refuses_malformed(tmp_pa
     result = json.loads((project / "result.json").read_text(encoding="utf-8"))
     assert result["failures"] == [], result
     assert result["checks"] >= 45, result
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows reservation query")
+@pytest.mark.parametrize("query_fails", [False, True])
+def test_major_upgrade_skips_reserved_ranges_without_repeated_failed_queries(
+    tmp_path: Path,
+    query_fails: bool,
+) -> None:
+    godot = godot_bin_or_skip()
+    project = tmp_path / "reserved-range"
+    addon = project / "addons/godot_ai"
+    shutil.copytree(PLUGIN_ROOT, addon)
+    reservation = addon / "utils/windows_port_reservation.gd"
+    source = reservation.read_text(encoding="utf-8")
+    source = source.replace(
+        'return OS.execute("netsh", NETSH_ARGS, output, true)',
+        "return 1"
+        if query_fails
+        else 'output.append(OS.get_environment("EXCLUDED_TABLE"))\n\treturn 0',
+    )
+    reservation.write_text(source, encoding="utf-8")
+    driver = """@tool
+extends Node
+const Config := preload("res://addons/godot_ai/client_configurator.gd")
+const Reservation := preload("res://addons/godot_ai/utils/windows_port_reservation.gd")
+func _ready() -> void:
+    if Engine.is_editor_hint(): run.call_deferred()
+func run() -> void:
+    var base := int(OS.get_environment("PORT_BASE"))
+    var settings := EditorInterface.get_editor_settings()
+    settings.set_setting("godot_ai/http_port", base)
+    settings.set_setting("godot_ai/ws_port", base + 103)
+    settings.erase(Config.SETTING_V4_ENDPOINT_PORTS)
+    Reservation._clear_cache_for_tests()
+    var before := Reservation.netsh_query_count()
+    var result := Config.prepare_major_upgrade_endpoints("3.2.5", "4.0.4")
+    result["queries"] = Reservation.netsh_query_count() - before
+    result["present"] = settings.has_setting(Config.SETTING_V4_ENDPOINT_PORTS)
+    var file := FileAccess.open("res://result.json", FileAccess.WRITE)
+    file.store_string(JSON.stringify(result))
+    get_tree().quit()
+"""
+    (project / "driver.gd").write_text(driver, encoding="utf-8")
+    (project / "project.godot").write_text(
+        'config_version=5\n[autoload]\nDriver="*res://driver.gd"\n',
+        encoding="utf-8",
+    )
+    environment = {"GODOT_AI_DISABLE_TELEMETRY": "true"}
+    for key in ("APPDATA", "LOCALAPPDATA", "HOME", "XDG_CONFIG_HOME"):
+        directory = tmp_path / key.lower()
+        directory.mkdir()
+        environment[key] = str(directory)
+    held: list[socket.socket] = []
+    try:
+        for base in range(23000, 50000, 107):
+            try:
+                for port in range(base, base + 104):
+                    probe = socket.socket()
+                    held.append(probe)
+                    probe.bind(("127.0.0.1", port))
+                    probe.listen()
+                break
+            except OSError:
+                for probe in held:
+                    probe.close()
+                held.clear()
+        else:
+            pytest.fail("No free test port range available")
+        if not query_fails:
+            # Only the two permissible candidates are made bindable.
+            held[1].close()
+            held[102].close()
+        environment.update(PORT_BASE=str(base), EXCLUDED_TABLE=f"{base + 2} {base + 101}")
+        log = run_godot_editor(
+            project,
+            godot,
+            allow_headless=True,
+            timeout=90,
+            environment=environment,
+        )
+    finally:
+        for probe in held:
+            probe.close()
+    assert "SCRIPT ERROR" not in log, log
+    result = json.loads((project / "result.json").read_bytes())
+    if query_fails:
+        assert not result["ok"] and not result["present"], result
+    else:
+        assert result["ok"] and result["present"], result
+        assert (result["http_port"], result["ws_port"]) == (base + 1, base + 102), result
+    assert result["queries"] == 1, result

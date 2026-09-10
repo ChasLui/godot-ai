@@ -135,7 +135,9 @@ static func prepare_major_upgrade_endpoints(from_version: String, to_version: St
 	var selected: Array[int] = []
 	var candidate := legacy_http + 1 if legacy_http < MAX_PORT else MIN_PORT
 	candidate = WindowsPortReservation.suggest_non_excluded_port(candidate, MAX_PORT - candidate + 1, MAX_PORT)
+	var reserved_output := str(WindowsPortReservation._get_cached_excluded_output().get("text", ""))
 	for _probe in range(SUGGEST_PORT_MAX_PROBES):
+		candidate = WindowsPortReservation.suggest_non_excluded_port_from_output(reserved_output, candidate, MAX_PORT - candidate + 1, MAX_PORT)
 		if candidate < MIN_PORT or candidate > MAX_PORT:
 			break
 		if candidate not in [legacy_http, legacy_ws] and not selected.has(candidate) and PortResolver.can_bind_local_port(candidate) and not PortResolver.is_port_in_use(candidate):
