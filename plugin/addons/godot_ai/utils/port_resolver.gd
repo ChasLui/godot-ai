@@ -28,6 +28,20 @@ static func unlock_process_spawn() -> void:
 	_process_spawn_mutex.unlock()
 
 
+## A managed Linux server needs a listener PID tool to prove ownership.
+## Query each launch so installing the missing tool makes Retry work.
+static func listener_tools_problem() -> String:
+	if OS.get_name() != "Linux":
+		return ""
+	var output: Array = []
+	var available := OS.execute("/bin/sh", ["-c",
+		"command -v lsof >/dev/null 2>&1 || command -v ss >/dev/null 2>&1"
+	], output, true)
+	if available == 0:
+		return ""
+	return "Cannot verify Linux listener ownership: neither lsof nor ss is available on the editor's PATH. Install lsof or iproute2 (which provides ss), then retry starting the server."
+
+
 static func can_bind_local_port(port: int) -> bool:
 	var server := TCPServer.new()
 	var err := server.listen(port, "127.0.0.1")

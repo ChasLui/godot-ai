@@ -773,6 +773,9 @@ func _effect_launch(payload: Dictionary) -> Dictionary:
 	var server_command: Array = payload.get("server_command", [])
 	if server_command.is_empty():
 		return {"ok": false, "reason": "no_command", "message": "No godot-ai server command was found."}
+	var listener_problem := PortResolver.listener_tools_problem()
+	if not listener_problem.is_empty():
+		return {"ok": false, "reason": "listener_tools_missing", "message": listener_problem}
 	## Do not spawn into a directory the server cannot publish from (#988):
 	## the failure would only surface as a proof timeout three minutes later.
 	var directory_problem := TransportCapability.directory_write_problem(port)
@@ -1151,7 +1154,7 @@ func _effect_stop(payload: Dictionary) -> Dictionary:
 	if disposition == "owned":
 		grants.append({"pid": pid, "fingerprint": fingerprint})
 	PortResolver.kill_exact_processes(grants, true)
-	if port > 0:
+	if port > 0 and not grants.is_empty():
 		PortResolver.wait_for_port_free(port, 3.0)
 	var targets_gone := true
 	for exact in grants:

@@ -815,6 +815,9 @@ func _update_status() -> void:
 	elif connected:
 		status_text = _connected_status_text()
 		status_color = Color.GREEN
+	elif bool(server_status.get("handoff_retry_pending", false)):
+		status_text = "Recovering after update…"
+		status_color = COLOR_AMBER
 	elif state == ServerStateScript.CRASHED:
 		var exit_ms: int = server_status.get("exit_ms", 0)
 		status_text = "Server exited after %.1fs" % (exit_ms / 1000.0)
@@ -840,6 +843,9 @@ func _update_status() -> void:
 		## Every terminal spawn failure matched above; what is left is the
 		## post-update window where the server is being brought back.
 		status_text = "Finishing update — starting server…"
+		status_color = COLOR_AMBER
+	elif state == ServerStateScript.SPAWNING:
+		status_text = "Starting server…"
 		status_color = COLOR_AMBER
 	elif not transport_status.is_empty():
 		var transport_phase := str(transport_status.get("phase", ""))
@@ -2759,14 +2765,12 @@ func _on_update_confirmed() -> void:
 
 static func update_confirm_text(version: String, current_version: String) -> String:
 	var target := "Godot AI v%s" % version if not version.is_empty() else "the new Godot AI"
-	var clients := (
-		"AI clients already using v%s can reconnect without restarting. Relaunch clients still using an older version." % current_version
-		if McpServerVersionCheck.attached_bridges_follow(current_version, version)
-		else "Quit and relaunch connected AI clients after the update."
-	)
-	return (
-		"Install %s in this editor? Open scenes and unsaved changes stay in place. AI tools briefly disconnect while the plugin reloads.\n\n%s"
-	) % [target, clients]
+	var text := "Update to %s? Unsaved changes are kept." % target
+	if McpServerVersionCheck.attached_bridges_follow(current_version, version):
+		text += "\n\nRestart AI clients older than v4.0.4."
+	else:
+		text += "\n\nRestart your AI client after updating."
+	return text
 
 
 func present_update_check(result: Dictionary) -> void:

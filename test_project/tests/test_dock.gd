@@ -510,6 +510,26 @@ class _RepinRecordingOwner extends ClientJobOwnerScript:
 		}
 
 
+func test_active_startup_stays_amber_with_blocked_transport_after_grace() -> void:
+	_dock._build_ui()
+	_dock._startup_grace_until_msec = 0
+	_dock._post_update_server_pending = false
+	var manager := McpServerLifecycleManager.new()
+	manager.configure({"automatic_effects": false})
+	manager.start_server()
+	_dock.present_lifecycle_snapshot(manager.get_status_dict())
+	_dock.present_transport_snapshot({"connected": false, "status": {"phase": "blocked"}})
+	_dock._update_status()
+	assert_eq(_dock._status_label.text, "Starting server…")
+	assert_eq(_dock._status_icon.color, McpDockScript.COLOR_AMBER)
+	assert_true(manager.is_connection_blocked(), "startup presentation grants no transport authority")
+	manager._block("launch_gone", "The server exited")
+	_dock.present_lifecycle_snapshot(manager.get_status_dict())
+	_dock._update_status()
+	assert_true(_dock._status_label.text.begins_with("Server exited"), _dock._status_label.text)
+	assert_eq(_dock._status_icon.color, Color.RED)
+
+
 func test_post_update_window_reads_as_finishing_not_blocked() -> void:
 	_dock._build_ui()
 	## Restarted editor after an update: lifecycle dormant, transport blocked.
@@ -739,16 +759,10 @@ func test_post_update_retry_button_emits_barrier_action_instead_of_a_second_upda
 
 func test_update_confirmation_preserves_editor_and_names_client_compatibility() -> void:
 	var text := McpDockScript.update_confirm_text("4.1.0", "4.0.4")
-	assert_true(text.contains("Open scenes and unsaved changes stay in place"), text)
-	assert_true(text.contains("AI tools briefly disconnect"), text)
-	assert_false(text.contains("restart the Godot editor"), text)
-	assert_true(text.contains("Godot AI v4.1.0"), text)
-	assert_true(text.contains("AI clients already using v4.0.4 can reconnect without restarting."), text)
-	assert_true(text.contains("Relaunch clients still using an older version."), text)
+	assert_eq(text, "Update to Godot AI v4.1.0? Unsaved changes are kept.\n\nRestart AI clients older than v4.0.4.")
 	for versions in [["4.0.3", "4.1.0"], ["4.1.0", "5.0.0"], ["", "4.1.0"], ["4.0.4", ""]]:
 		text = McpDockScript.update_confirm_text(versions[1], versions[0])
-		assert_true(text.contains("Quit and relaunch connected AI clients"), text)
-		assert_false(text.contains("without restarting"), text)
+		assert_true(text.ends_with("Restart your AI client after updating."), text)
 	assert_true(McpDockScript.update_confirm_text("", "4.0.4").contains("the new Godot AI"))
 
 

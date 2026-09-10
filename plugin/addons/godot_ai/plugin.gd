@@ -135,6 +135,7 @@ var _last_logged_block := ""
 ## that is bound but not yet answering status reads as merely occupied.
 const POST_UPDATE_REPROBE_LIMIT := 10
 var _post_update_reprobes_left := POST_UPDATE_REPROBE_LIMIT
+var _post_update_retry_episode := 0
 ## A pre-v4 server left on the port by a still-running v3 attach bridge
 ## outlives the fast budget above: its lease lasts 30 s after that client
 ## quits and its idle backstop another 120 s. Poll slowly across that
@@ -713,6 +714,12 @@ func _lifecycle_snapshot_for_dock() -> Dictionary:
 		_normal_start_released and bool(snapshot.get("can_recover_incompatible", false))
 	)
 	snapshot["normal_start_released"] = _normal_start_released
+	if _post_update_retry_episode > 0 and int(snapshot.get("episode_id", 0)) == _post_update_retry_episode:
+		var episode: Dictionary = _lifecycle.episode_snapshot()
+		if str(episode.get("state", "")) == "BLOCKED" and str(episode.get("reason", "")) == "launch_gone" and str(episode.get("proof_pending_reason", "")) == "capability_pair":
+			## Only the presentation changes; transport remains blocked until proof.
+			snapshot["state"] = ServerStateScript.SPAWNING
+			snapshot["handoff_retry_pending"] = true
 	return snapshot
 
 
@@ -1339,11 +1346,13 @@ static func _supports_godot_version(version_info: Dictionary) -> bool:
 
 
 func _on_lifecycle_snapshot_changed(snapshot: Dictionary) -> void:
+	if int(snapshot.get("episode_id", 0)) != _post_update_retry_episode or str(snapshot.get("episode_state", "")) != "BLOCKED":
+		_post_update_retry_episode = 0
 	if _connection != null and bool(snapshot.get("connection_blocked", true)):
 		_connection.connect_blocked = true
 		_connection.connect_block_reason = str(snapshot.get("message", ""))
-	_log_lifecycle_block(snapshot)
 	_replace_server_left_by_update(snapshot)
+	_log_lifecycle_block(snapshot)
 	if _client_jobs != null:
 		_client_jobs.set_client_health_blocked(
 			ServerStateScript.blocks_client_health(
@@ -1363,7 +1372,8 @@ func _log_lifecycle_block(snapshot: Dictionary) -> void:
 	if message.is_empty() or message == _last_logged_block:
 		return
 	_last_logged_block = message
-	print("MCP | server start blocked: %s" % message)
+	var retry_pending := bool(_lifecycle_snapshot_for_dock().get("handoff_retry_pending", false))
+	print("MCP | %s: %s" % ["server handoff retry pending" if retry_pending else "server start blocked", message])
 
 
 ## Once, right after an update: a godot-ai server at the version we just
@@ -1385,6 +1395,9 @@ func _replace_server_left_by_update(snapshot: Dictionary) -> void:
 		## the remaining path.
 		if str(snapshot.get("episode_state", "")) != "BLOCKED":
 			return
+		var episode_id := int(snapshot.get("episode_id", 0))
+		if episode_id <= 0 or episode_id == _post_update_retry_episode:
+			return
 		if str(snapshot.get("blocked_hint", "")) == ServerLifecycleManager.STALE_PRE_V4_HINT:
 			if _post_update_stale_reprobes_left <= 0:
 				return
@@ -1394,13 +1407,15 @@ func _replace_server_left_by_update(snapshot: Dictionary) -> void:
 					% int(snapshot.get("conflict_port", 0))
 				)
 			_post_update_stale_reprobes_left -= 1
+			_post_update_retry_episode = episode_id
 			get_tree().create_timer(POST_UPDATE_STALE_REPROBE_SECONDS).timeout.connect(
-				_reprobe_after_update, CONNECT_ONE_SHOT
+				_reprobe_after_update.bind(episode_id), CONNECT_ONE_SHOT
 			)
 			return
 		if _post_update_reprobes_left > 0:
 			_post_update_reprobes_left -= 1
-			get_tree().create_timer(1.0).timeout.connect(_reprobe_after_update, CONNECT_ONE_SHOT)
+			_post_update_retry_episode = episode_id
+			get_tree().create_timer(1.0).timeout.connect(_reprobe_after_update.bind(episode_id), CONNECT_ONE_SHOT)
 		return
 	var version := str(snapshot.get("conflict_version", ""))
 	if not _update_may_replace(version):
@@ -1433,8 +1448,16 @@ func _update_may_replace(conflict_version: String) -> bool:
 	)
 
 
-func _reprobe_after_update() -> void:
+func _reprobe_after_update(episode_id: int) -> void:
+	if episode_id != _post_update_retry_episode:
+		return
+	_post_update_retry_episode = 0
 	if _post_update_replaced_version.is_empty() or _lifecycle == null or not _normal_start_released:
+		_publish_dock_status_snapshots()
+		return
+	var snapshot: Dictionary = _lifecycle.get_status_dict()
+	if int(snapshot.get("episode_id", 0)) != episode_id or str(snapshot.get("episode_state", "")) != "BLOCKED":
+		_publish_dock_status_snapshots()
 		return
 	_lifecycle.start_server()
 

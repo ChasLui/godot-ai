@@ -975,6 +975,7 @@ var _tool_probe_ready := false
 var _finished := false
 var _status_wait_started_ms := 0
 var _pre_instance_id := ""
+var _last_native_status := ""
 
 
 func _ready() -> void:
@@ -990,7 +991,34 @@ func _ready() -> void:
 \tset_process(true)
 
 
+func _sample_native_dock() -> void:
+\tvar current := DriverSupport.find_godot_ai_plugin()
+\tvar value := {{"loaded_version": "", "text": "", "color": "",
+\t\t"state": "plugin_absent", "handoff_retry_pending": false}}
+\tif current != null:
+\t\tvalue.loaded_version = str(current.get("_loaded_plugin_version"))
+\t\tvar snapshot: Dictionary = current.call("_lifecycle_snapshot_for_dock")
+\t\tvalue.state = str(snapshot.get("episode_state", snapshot.get("state", "")))
+\t\tvalue.handoff_retry_pending = bool(snapshot.get("handoff_retry_pending", false))
+\t\tvar dock: Variant = current.get("_dock")
+\t\tif is_instance_valid(dock):
+\t\t\tvar label: Variant = dock.get("_status_label")
+\t\t\tvar icon: Variant = dock.get("_status_icon")
+\t\t\tif is_instance_valid(label):
+\t\t\t\tvalue.text = str(label.text)
+\t\t\tif is_instance_valid(icon):
+\t\t\t\tvalue.color = icon.color.to_html(true)
+\tvar encoded := JSON.stringify(value)
+\tif encoded != _last_native_status:
+\t\t_last_native_status = encoded
+\t\tvalue.pid = OS.get_process_id()
+\t\tvalue.ticks_msec = Time.get_ticks_msec()
+\t\tprint("SELF_UPDATE_DOCK_TRACE | " + JSON.stringify(value))
+
+
 func _process(_delta: float) -> void:
+\tif NATIVE_UPDATE:
+\t\t_sample_native_dock()
 \tif _finished:
 \t\treturn
 \t_frames += 1
@@ -1005,6 +1033,8 @@ func _process(_delta: float) -> void:
 \t\t\t\tvar manager: Variant = current.get("_update_manager")
 \t\t\t\tif manager == null or not manager.is_install_in_flight():
 \t\t\t\t\treturn
+\t\t\t\tDriverSupport._scene_history_trace("install_started", current.get_undo_redo(),
+\t\t\t\t\t_scene_state.scene, _scene_state)
 \t\t\t\t_native_started = true
 \t\t\t\t_status_wait_started_ms = Time.get_ticks_msec()
 \t\t\tif (current != null and current.get_instance_id() != _old_plugin_id
@@ -1224,6 +1254,8 @@ static func capture_scene_state(plugin: EditorPlugin) -> Dictionary:
 \tundo.add_do_property(scene, "process_priority", 123)
 \tundo.add_undo_property(scene, "process_priority", scene.process_priority)
 \tundo.commit_action()
+\tstate["history_id"] = undo.get_object_history_id(scene)
+\t_scene_history_trace("captured", undo, scene, state)
 \tEditorInterface.get_selection().clear()
 \tEditorInterface.get_selection().add_node(scene)
 \treturn state
@@ -1239,11 +1271,37 @@ static func verify_scene_state(plugin: EditorPlugin, state: Dictionary) -> Strin
 \t\treturn "selection changed or dirty scene was saved"
 \tvar undo := plugin.get_undo_redo()
 \tvar history := undo.get_history_undo_redo(undo.get_object_history_id(scene))
-\tif history == null or not history.undo() or scene.process_priority != state.priority:
+\t_scene_history_trace("before_undo", undo, scene, state)
+\tif history == null:
+\t\treturn "scene undo history did not survive activation: history is null"
+\tvar did_undo := history.undo()
+\t_scene_history_trace("after_undo", undo, scene, state, did_undo)
+\tif not did_undo or scene.process_priority != state.priority:
 \t\treturn "scene undo history did not survive activation"
-\tif not history.redo() or scene.process_priority != 123:
+\tvar did_redo := history.redo()
+\t_scene_history_trace("after_redo", undo, scene, state, did_redo)
+\tif not did_redo or scene.process_priority != 123:
 \t\treturn "scene redo history did not survive activation"
 \treturn ""
+
+
+static func _scene_history_trace(phase: String, undo: EditorUndoRedoManager,
+\tscene: Node, state: Dictionary, operation_result: Variant = null) -> void:
+\tvar history_id := undo.get_object_history_id(scene)
+\tvar history := undo.get_history_undo_redo(history_id)
+\tvar record := {"phase": phase, "pid": OS.get_process_id(),
+\t\t"ticks_msec": Time.get_ticks_msec(), "history_id": history_id,
+\t\t"captured_history_id": state.get("history_id", -1),
+\t\t"priority": scene.process_priority, "expected_original": state.priority,
+\t\t"operation_result": operation_result, "history_present": history != null}
+\tif history != null:
+\t\trecord["history_instance"] = history.get_instance_id()
+\t\trecord["version"] = history.get_version()
+\t\tif history.has_method("get_current_action_name"):
+\t\t\trecord["current_action"] = history.call("get_current_action_name")
+\t\tif history.has_method("get_history_count"):
+\t\t\trecord["action_count"] = history.call("get_history_count")
+\tprint("SELF_UPDATE_SCENE_TRACE | " + JSON.stringify(record))
 
 
 static func fetch_status(port: int) -> Dictionary:
@@ -1278,10 +1336,14 @@ static func fetch_status(port: int) -> Dictionary:
 \t\tOS.delay_msec(10)
 \tif not http.has_response() or http.get_response_code() != 200:
 \t\treturn {}
+\tvar expected_size := http.get_response_body_length()
+\tif expected_size > MAX_STATUS_BYTES:
+\t\treturn {}
 \tvar body := PackedByteArray()
 \tdeadline = Time.get_ticks_msec() + 2000
 \twhile http.get_status() == HTTPClient.STATUS_BODY:
-\t\thttp.poll()
+\t\tif http.poll() != OK or http.get_status() != HTTPClient.STATUS_BODY:
+\t\t\treturn {}
 \t\tvar chunk := http.read_response_body_chunk()
 \t\tif chunk.size() > 0:
 \t\t\tif body.size() + chunk.size() > MAX_STATUS_BYTES:
@@ -1291,7 +1353,12 @@ static func fetch_status(port: int) -> Dictionary:
 \t\t\tOS.delay_msec(5)
 \t\tif Time.get_ticks_msec() > deadline:
 \t\t\treturn {}
-\tvar parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
+\tif body.is_empty() or (expected_size >= 0 and body.size() != expected_size):
+\t\treturn {}
+\tvar json := JSON.new()
+\tif json.parse(body.get_string_from_utf8()) != OK:
+\t\treturn {}
+\tvar parsed: Variant = json.data
 \tif typeof(parsed) != TYPE_DICTIONARY:
 \t\treturn {}
 \tif parsed.get("instance_id") != record["instance_nonce"]:
@@ -1699,7 +1766,9 @@ def run_godot_editor(
         raise AssertionError(f"{failure}\n{output}") from failure
     if live_probe is not None:
         assert probe_ran, output
-    assert proc.returncode == expected_exit_code, output
+    assert proc.returncode == expected_exit_code, (
+        f"editor exit code {proc.returncode}, expected {expected_exit_code}\n{output}"
+    )
     return output
 
 

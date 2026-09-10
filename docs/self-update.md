@@ -269,6 +269,31 @@ still repins owned client entries to the installed version before serving.
   final v3 in place, and the harness verifies that restored tree rather than
   waiting for a restart.
 
+## Preparing a two-hop interactive fixture
+
+Prepare both locally signed updates before opening the editor:
+
+```bash
+script/local-self-update-smoke --project-dir /tmp/godot-ai-two-hop \
+  --from-v3-tag v3.2.5 --target-version 4.0.5 --then-version 4.0.6 \
+  --start-published-v3-server --no-launch
+```
+
+The first signed v4 tree advertises the second signed package. No installed
+add-on files need to change between clicks. The published v3 server startup
+remains intact; the v4 backends are frozen local snapshots stamped with the
+test versions. Linux requires `lsof` or `ss` before preparation in this mode.
+
+This command prepares a fixture; it does not execute or certify both updates.
+Use the printed launch command, which runs an isolated child through a generated
+wrapper. A custom driver must use `godot_child_environment(project_dir)` as well.
+Use the two native dock update actions,
+and check process identity, scene/undo continuity, exact trees, and authenticated
+tool responses after each hop. The fixture refuses client configuration writes
+when its isolated Codex environment is missing or mismatched. Preserve screenshots
+and receipts, then close the editor and clean generated caches as described in
+[verification](verification.md).
+
 ## Known limits
 
 - **A signed tree can still fail to parse or activate.** Signature and tree

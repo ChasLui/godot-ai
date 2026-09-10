@@ -8,7 +8,6 @@ on:
       - "docs/**"
       - "**.md"
   pull_request:
-    branches: [main, codex/v4-release-promotion]
     paths-ignore:
       - "docs/**"
       - "**.md"
@@ -284,6 +283,8 @@ jobs:
             tests/integration/test_godot_editor_restart.py \
             tests/integration/test_test_run_cache_warning.py \
             tests/integration/test_migration_bridge_failures.py \
+            tests/integration/test_linux_listener_tools.py \
+            tests/integration/test_self_update_status_driver.py \
             tests/integration/test_self_update_upgrade_paths.py \
             tests/integration/test_qualification_https.py \
             tests/integration/test_plugin_reload_persistence.py \

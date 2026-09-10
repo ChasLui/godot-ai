@@ -37,6 +37,23 @@ def load_smoke_script() -> ModuleType:
     return module
 
 
+def test_linux_interactive_v3_server_requires_listener_pid_scraper(monkeypatch) -> None:
+    smoke = load_smoke_script()
+    monkeypatch.setattr(smoke.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(smoke.shutil, "which", lambda _name: None)
+
+    with pytest.raises(smoke.HarnessError, match="requires lsof or ss"):
+        smoke.require_linux_listener_pid_tool()
+
+
+def test_linux_interactive_v3_server_accepts_ss_fallback(monkeypatch) -> None:
+    smoke = load_smoke_script()
+    monkeypatch.setattr(smoke.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(smoke.shutil, "which", lambda name: "/usr/bin/ss" if name == "ss" else None)
+
+    smoke.require_linux_listener_pid_tool()
+
+
 def _static_func_block(text: str, signature: str) -> str:
     """Return one top-level GDScript function, stopping at the next top-level func."""
     start = text.index(signature)
@@ -383,7 +400,8 @@ def test_launch_passes_isolation_only_to_godot_child(
     addon.mkdir(parents=True)
     (addon / "plugin.gd").write_text(
         'const RUNNER = "update_activation_runner.gd"\n'
-        if same_editor else "extends EditorPlugin\n",
+        if same_editor
+        else "extends EditorPlugin\n",
         encoding="utf-8",
     )
     godot = tmp_path / "Godot"
@@ -405,7 +423,8 @@ def test_launch_passes_isolation_only_to_godot_child(
                 f"{smoke.SMOKE_STAGED_LOG}\n",
                 "MCP | stopped server (PID [123])\n",
                 f"MCP | update to 4.0.1 {smoke.IN_EDITOR_SWAP_LOG_SUFFIX}\n"
-                if same_editor else "MCP | update to 4.0.1 swapped in; restarting the editor\n",
+                if same_editor
+                else "MCP | update to 4.0.1 swapped in; restarting the editor\n",
                 f"{smoke.IN_EDITOR_COMPLETED_LOG}1234\n" if same_editor else "",
                 smoke.SMOKE_MIGRATED_LOG + "\n" if same_editor else "",
             ]
@@ -968,13 +987,16 @@ def test_verify_post_run_requires_live_status(
     assert "post-update /godot-ai/status was not live" in captured
 
 
-@pytest.mark.parametrize("diagnostic", [
-    None,
-    "SCRIPT ERROR: Compile Error: Failed to compile depended scripts.",
-    'ERROR: Failed to load script "res://addons/godot_ai/plugin.gd".',
-    "ERROR: Attempt to open script 'res://addons/godot_ai/migration_bridge.gd' "
-    "resulted in error 'File not found'.",
-])
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        None,
+        "SCRIPT ERROR: Compile Error: Failed to compile depended scripts.",
+        'ERROR: Failed to load script "res://addons/godot_ai/plugin.gd".',
+        "ERROR: Attempt to open script 'res://addons/godot_ai/migration_bridge.gd' "
+        "resulted in error 'File not found'.",
+    ],
+)
 def test_verify_post_run_accepts_live_status_only_without_script_errors(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1028,3 +1050,170 @@ def test_crash_report_filter_ignores_an_unrelated_godot_binary(tmp_path: Path) -
 
     assert smoke._report_matches_executable(report, launched) is False
     assert smoke._report_matches_executable(report, unrelated) is True
+
+
+@pytest.mark.parametrize("next_version", ["4.0.5", "4.0.4", "4.00.6", "5.0.0", "garbage"])
+def test_v3_chain_rejects_invalid_version_before_creating_fixture(tmp_path, next_version):
+    smoke = load_smoke_script()
+    project = tmp_path / "must-not-exist"
+    with pytest.raises(smoke.HarnessError):
+        smoke.prepare_v3_crossing_project(
+            project,
+            from_version="3.2.5",
+            target_version="4.0.5",
+            next_version=next_version,
+            http_port=18000,
+            ws_port=19500,
+        )
+    assert not project.exists()
+
+
+def test_v3_chain_compares_versions_numerically():
+    smoke = load_smoke_script()
+    smoke.validate_v3_chain_versions("4.0.9", "4.0.10")
+    with pytest.raises(smoke.HarnessError, match="greater"):
+        smoke.validate_v3_chain_versions("4.1.0", "4.0.99")
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--then-version", "4.0.6"],
+        ["--target-version", "4.0.5"],
+        ["--start-published-v3-server"],
+        ["--from-v3-tag", "v3.2.5", "--next-version", "4.0.6", "--no-launch"],
+        ["--from-v3-tag", "v3.2.5", "--then-version", "4.0.6"],
+    ],
+)
+def test_invalid_chain_cli_options_preserve_existing_fixture(tmp_path, monkeypatch, options):
+    smoke = load_smoke_script()
+    marker = tmp_path / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(
+        sys, "argv", [str(SCRIPT), "--project-dir", str(tmp_path), "--force", *options]
+    )
+    assert smoke.main() == 1
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert list(tmp_path.iterdir()) == [marker]
+
+
+@pytest.mark.parametrize("next_version", [None, "4.0.6"])
+def test_v3_chain_signs_onward_bundle_without_changing_single_hop(
+    tmp_path, monkeypatch, next_version
+):
+    smoke = load_smoke_script()
+    project = tmp_path / "chain"
+    result = smoke.prepare_v3_crossing_project(
+        project,
+        from_version="3.2.5",
+        target_version="4.0.5",
+        next_version=next_version,
+        http_port=18000,
+        ws_port=19500,
+    )
+    target = result["work"] / "release-tree"
+    manager = (target / "utils/update_manager.gd").read_text(encoding="utf-8")
+    assert (result["work"] / ".gdignore").is_file()
+    assert not (result["work"] / "smoke-release-key.pem").exists()
+    assert not (target / "utils/self_update_smoke_base.gd").exists()
+    assert "_self_update_smoke_trigger" not in (target / "mcp_dock.gd").read_text(encoding="utf-8")
+    if next_version is None:
+        assert result["second_bundle"] is None
+        assert "SELF_UPDATE_SMOKE_NEXT_VERSION" not in manager
+    else:
+        assert 'SELF_UPDATE_SMOKE_NEXT_VERSION := "4.0.6"' in manager
+        bundle = result["second_bundle"]
+        assert (bundle / ".gdignore").is_file()
+        manifest = json.loads((bundle / smoke.SMOKE_MANIFEST_NAME).read_bytes())
+        assert manifest["version"] == "4.0.6"
+        with zipfile.ZipFile(bundle / smoke.SMOKE_ARCHIVE_NAME) as archive:
+            assert 'version="4.0.6"' in archive.read("addons/godot_ai/plugin.cfg").decode()
+            assert "addons/godot_ai/utils/self_update_smoke_base.gd" in archive.namelist()
+
+
+def test_fixture_config_guard_executes_for_missing_wrong_and_expected_home(tmp_path):
+    smoke = load_smoke_script()
+    godot = os.environ.get("GODOT_BIN") or shutil.which("godot")
+    if not godot:
+        pytest.skip("Godot executable required to exercise the generated fixture guard")
+    path = tmp_path / "configurator.gd"
+    shutil.copyfile(ROOT / "plugin/addons/godot_ai/client_configurator.gd", path)
+    smoke.patch_isolated_client_launch(path, tmp_path / "client-sentinel")
+    patched = path.read_text(encoding="utf-8")
+    guard = _static_func_block(patched, "static func _self_update_smoke_config_error()")
+    for signature in (
+        "static func _config_path_resolution_error(",
+        "static func resolve_attach_launch(",
+    ):
+        assert "_self_update_smoke_config_error()" in _static_func_block(patched, signature)
+    (tmp_path / "project.godot").write_text("config_version=5\n", encoding="utf-8")
+    driver = tmp_path / "guard.gd"
+    driver.write_text(
+        "extends SceneTree\n"
+        + guard.replace("\t", "    ")
+        + """
+func _initialize() -> void:
+    OS.set_environment("CODEX_HOME", "")
+    assert(not _self_update_smoke_config_error().is_empty())
+    OS.set_environment("CODEX_HOME", ProjectSettings.globalize_path("res://wrong-home"))
+    assert(not _self_update_smoke_config_error().is_empty())
+    OS.set_environment("CODEX_HOME", ProjectSettings.globalize_path("res://.godot-ai-self-update-smoke/client-environment/codex"))
+    assert(_self_update_smoke_config_error().is_empty())
+    OS.set_environment("CODEX_HOME", ProjectSettings.globalize_path("res://.self-update-integration/codex"))
+    assert(_self_update_smoke_config_error().is_empty())
+    OS.set_environment("CODEX_HOME", ProjectSettings.globalize_path("res://.self-update-integration/codex-other"))
+    assert(not _self_update_smoke_config_error().is_empty())
+    print("FIXTURE_CONFIG_GUARD_PASSED")
+    quit()
+""",
+        encoding="utf-8",
+    )
+    run = subprocess.run(
+        [godot, "--headless", "--path", str(tmp_path), "--script", str(driver)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "SCRIPT ERROR" not in run.stdout + run.stderr
+    assert "FIXTURE_CONFIG_GUARD_PASSED" in run.stdout
+
+
+
+def test_printed_manual_launcher_preserves_isolation_and_exact_argv(
+    tmp_path, monkeypatch, capsys
+):
+    import runpy
+
+    smoke = load_smoke_script()
+    project = tmp_path / "fixture with spaces and ' apostrophe"
+    work = project / ".godot-ai-self-update-smoke"
+    work.mkdir(parents=True)
+    godot = "Godot with spaces & punctuation"
+    log = work / "editor.log"
+    monkeypatch.setenv("CODEX_HOME", "host-must-not-be-used")
+    monkeypatch.setenv(CAPABILITY_DIR_ENV, "host-capabilities-must-not-be-used")
+    smoke.print_manual_launch(project, godot, log)
+    output = capsys.readouterr().out
+    assert "launch-editor.py" in output
+    if os.name == "nt":
+        assert "PowerShell" in output
+        assert "'' apostrophe" in output
+    captured = {}
+
+    def launch(command, *, env):
+        captured.update(command=command, environment=env)
+        return 7
+
+    monkeypatch.setattr(subprocess, "call", launch)
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_path(str(work / "launch-editor.py"), run_name="__main__")
+    assert exited.value.code == 7
+    assert captured["command"] == [
+        godot, "--editor", "--path", str(project), "--log-file", str(log)
+    ]
+    expected = smoke.godot_child_environment(project)
+    assert all(captured["environment"][key] == value for key, value in expected.items())
+    if os.name == "nt":
+        assert CAPABILITY_DIR_ENV not in captured["environment"]
+    assert os.environ["CODEX_HOME"] == "host-must-not-be-used"
