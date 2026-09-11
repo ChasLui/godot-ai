@@ -1440,13 +1440,41 @@ static func _resolve_consoleless_python(
 			if int(probe.get("exit_code", -1)) == 0:
 				var python := str(probe.get("stdout", "")).strip_edges()
 				if not python.is_empty():
-					var managed_pythonw := python.get_base_dir().path_join("pythonw.exe")
-					if FileAccess.file_exists(managed_pythonw):
+					var managed_pythonw := _consoleless_python_for_interpreter(python)
+					if not managed_pythonw.is_empty():
 						return managed_pythonw
 
 	## A system Python GUI launcher is sufficient for the non-dev bootstrap;
 	## it does not import godot_ai itself.
 	return CliFinder.find(["pythonw.exe"])
+
+
+## uv can return a launcher in ~/.local/bin whose GUI interpreter lives in
+## the managed Python installation. Ask that interpreter for its base path.
+## The optional result keeps tests independent of installed executables.
+static func _consoleless_python_for_interpreter(
+	python: String, probe_result: Dictionary = {}
+) -> String:
+	if not python.is_absolute_path() or not FileAccess.file_exists(python):
+		return ""
+	var sibling := python.get_base_dir().path_join("pythonw.exe")
+	if FileAccess.file_exists(sibling):
+		return sibling
+	var probe := probe_result
+	if probe.is_empty():
+		probe = McpCliExec.run(
+			python, ["-I", "-c", "import sys; print(getattr(sys, '_base_executable', sys.executable))"],
+			_DISCOVERY_TIMEOUT_MS, false
+		)
+	if int(probe.get("exit_code", -1)) != 0 or not probe.get("stdout") is String:
+		return ""
+	var base_python := str(probe["stdout"]).strip_edges()
+	if base_python.contains("\n") or base_python.contains("\r"):
+		return ""
+	if not base_python.is_absolute_path() or not FileAccess.file_exists(base_python):
+		return ""
+	var base_pythonw := base_python.get_base_dir().path_join("pythonw.exe")
+	return base_pythonw if FileAccess.file_exists(base_pythonw) else ""
 
 
 static func _system_version_from_probe(probe: Dictionary) -> Dictionary:

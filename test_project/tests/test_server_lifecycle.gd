@@ -10,6 +10,11 @@ const WS := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const INSTANCE := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 
+class _StaleCapabilityLifecycle extends Lifecycle:
+	func _read_capability(_port: int) -> Dictionary:
+		return {"http": HTTP, "websocket": WS, "instance_nonce": INSTANCE}
+
+
 func suite_name() -> String:
 	return "server_lifecycle"
 
@@ -161,14 +166,90 @@ func test_authenticated_endpoint_loss_blocks_then_schedules_a_bounded_reprobe() 
 	assert_false(manager.recover_lost_endpoint(episode_id))
 
 
-func test_endpoint_reprobe_for_an_owned_server_stops_the_exact_grant_first() -> void:
+func test_endpoint_reprobe_preserves_the_healthy_owned_server_and_stop_grant() -> void:
 	var manager := _manager()
 	_complete_owned_start(manager)
-	manager.transport_lost("child exited")
+	var grant = manager._process_grant
+	var effects: Array[Dictionary] = []
+	manager.effect_requested.connect(func(id: int, kind: String, payload: Dictionary):
+		effects.append({"id": id, "kind": kind, "payload": payload})
+	)
+	manager.transport_lost("socket closed")
 	assert_true(manager.recover_lost_endpoint(int(manager.episode_snapshot().id)))
 	var episode := manager.episode_snapshot()
-	assert_eq(episode.state, Lifecycle.STOPPING)
-	assert_eq(episode.after_stop, "start")
+	assert_eq(episode.state, Lifecycle.STARTING)
+	assert_eq(episode.phase, Lifecycle.PROBE)
+	assert_eq(effects.size(), 1)
+	assert_eq(effects[0].kind, Lifecycle.PROBE)
+	assert_true(effects[0].payload.grant == grant)
+	assert_true(manager.complete_effect(episode.id, Lifecycle.PROBE, {
+		"outcome": "compatible", "version": VERSION, "transport": _transport(),
+		"owned_disposition": "owned",
+	}))
+	assert_eq(manager.get_status_dict().ready_kind, "owned")
+	assert_true(manager._process_grant == grant, "recovery preserves the original exact grant")
+	assert_eq(manager.get_server_pid(), 4242)
+	assert_eq(effects.size(), 1, "healthy recovery neither stops nor launches a backend")
+	manager.stop_server()
+	assert_eq(effects[1].kind, Lifecycle.STOP)
+	assert_true(effects[1].payload.grant == grant, "explicit teardown keeps its original authority")
+	assert_true(manager.complete_effect(effects[1].id, Lifecycle.STOP, {"ok": true}))
+	assert_false(manager.has_managed_server())
+
+
+func test_endpoint_reprobe_of_dead_or_reused_owned_pid_launches_without_killing() -> void:
+	for disposition in ["gone", "replaced"]:
+		var manager := _manager()
+		_complete_owned_start(manager)
+		var effects: Array[String] = []
+		manager.effect_requested.connect(func(_id: int, kind: String, _payload: Dictionary):
+			effects.append(kind)
+		)
+		manager.transport_lost("backend disappeared")
+		assert_true(manager.recover_lost_endpoint(int(manager.episode_snapshot().id)))
+		assert_true(manager.complete_effect(manager.episode_snapshot().id, Lifecycle.PROBE, {
+			"outcome": "free", "owned_disposition": disposition,
+		}))
+		assert_eq(manager.episode_snapshot().phase, Lifecycle.LAUNCH)
+		assert_false(manager.has_managed_server(), "the dead or reused PID loses its old grant")
+		assert_eq(effects, [Lifecycle.PROBE, Lifecycle.LAUNCH], "no STOP is needed for a gone process")
+
+
+func test_endpoint_reprobe_adopts_replacement_without_transferring_old_grant() -> void:
+	var manager := _manager()
+	_complete_owned_start(manager)
+	manager.transport_lost("backend replaced")
+	assert_true(manager.recover_lost_endpoint(int(manager.episode_snapshot().id)))
+	assert_true(manager.complete_effect(manager.episode_snapshot().id, Lifecycle.PROBE, {
+		"outcome": "compatible", "version": VERSION,
+		"transport": _transport("cccccccccccccccccccccccccccccccc"),
+		"owned_disposition": "gone",
+	}))
+	assert_eq(manager.get_status_dict().ready_kind, "adopted")
+	assert_false(manager.has_managed_server(), "authenticated replacement does not inherit kill authority")
+	assert_eq(manager.get_server_pid(), -1)
+
+
+func test_endpoint_reprobe_failure_keeps_grant_without_stopping_or_launching() -> void:
+	for result in [
+		{"outcome": "blocked", "reason": "occupied", "message": "probe timed out"},
+		{"outcome": "blocked", "reason": "process_authority_mismatch", "message": "identity unproven"},
+		{"outcome": "free", "owned_disposition": "owned"},
+		{"outcome": "compatible", "version": VERSION, "transport": _transport()},
+	]:
+		var manager := _manager()
+		_complete_owned_start(manager)
+		var grant = manager._process_grant
+		var effects: Array[String] = []
+		manager.effect_requested.connect(func(_id: int, kind: String, _payload: Dictionary):
+			effects.append(kind)
+		)
+		manager.transport_lost("endpoint lost")
+		assert_true(manager.recover_lost_endpoint(int(manager.episode_snapshot().id)))
+		assert_true(manager.complete_effect(manager.episode_snapshot().id, Lifecycle.PROBE, result))
+		assert_eq(manager.episode_snapshot().state, Lifecycle.BLOCKED)
+		assert_true(manager._process_grant == grant)
+		assert_eq(effects, [Lifecycle.PROBE], "inconclusive probes never kill or duplicate a live backend")
 
 
 func test_endpoint_reprobe_gives_up_after_its_budget() -> void:
@@ -651,6 +732,28 @@ func test_launch_failure_carries_the_startup_report() -> void:
 	DirAccess.remove_absolute(path)
 
 
+func test_windows_unbound_status_probe_retains_missing_capability_priority() -> void:
+	if OS.get_name() != "Windows":
+		skip("Windows positive-bind shortcut")
+		return
+	var port := McpClientConfigurator.suggest_free_port(41000)
+	var listener := TCPServer.new()
+	var bound := listener.listen(port, "127.0.0.1")
+	listener.stop()
+	assert_eq(bound, OK, "the test owns and releases an actual loopback port")
+	if bound != OK:
+		return
+	var missing := Lifecycle._probe_with_capability(port, {}, 3000)
+	assert_eq(str(missing.error), "missing_capability")
+	var result := Lifecycle._probe_with_capability(port, {
+		"http": HTTP, "websocket": WS, "instance_nonce": INSTANCE,
+	}, 3000)
+	assert_false(bool(result.reachable))
+	assert_eq(str(result.error), "port_unbound")
+	assert_eq(str(result.instance_id), "", "free-port evidence cannot authenticate an instance")
+	assert_eq(int(result.status_code), 0, "no HTTP response was claimed")
+
+
 func test_probe_blocks_on_a_held_websocket_port_before_launch() -> void:
 	## Both ports bind together; a held WebSocket port would kill the launch at
 	## the server's preflight. The probe names it and the setting instead.
@@ -658,7 +761,10 @@ func test_probe_blocks_on_a_held_websocket_port_before_launch() -> void:
 	var listener := TCPServer.new()
 	assert_eq(listener.listen(ws_port, "127.0.0.1"), OK)
 	var http_port := McpClientConfigurator.suggest_free_port(ws_port + 1)
-	var manager := _manager({"http_port": http_port, "ws_port": ws_port})
+	## A stale record must exercise the HTTP probe rather than bypass it for
+	## missing credentials. The held socket remains the real refusal boundary.
+	var manager := _StaleCapabilityLifecycle.new()
+	manager.configure({"automatic_effects": false})
 	var result := manager._effect_probe({
 		"http_port": http_port, "expected_version": VERSION,
 		"expected_ws_port": ws_port, "timeout_ms": 200,
@@ -670,12 +776,14 @@ func test_probe_blocks_on_a_held_websocket_port_before_launch() -> void:
 	assert_true(str(result.message).contains("godot_ai/ws_port"), result.message)
 	assert_eq(int(result.target.port), ws_port)
 	assert_false(bool(result.target.replaceable))
+	assert_false(result.has("transport"), "a held WS port grants no transport")
 	## With the WebSocket port free again the same probe reports free.
 	var free_result := manager._effect_probe({
 		"http_port": http_port, "expected_version": VERSION,
 		"expected_ws_port": ws_port, "timeout_ms": 200,
 	})
 	assert_eq(str(free_result.outcome), "free")
+	assert_false(free_result.has("transport"))
 
 
 func test_occupied_block_names_why_the_record_did_not_authenticate() -> void:
@@ -723,14 +831,15 @@ func test_startup_report_summary_quotes_the_server_failure() -> void:
 
 
 func test_launch_unproven_message_summarises_the_refusals() -> void:
-	var message := Lifecycle._launch_unproven_message(
+	var manager := Lifecycle.new()
+	var message := manager._launch_unproven_message(
 		2147480000, ["not_alive", "not_alive", "unbranded"], 15200
 	)
 	assert_true(message.contains("3 attempts over 15.2 s"), message)
 	assert_true(message.contains("pid 2147480000"), message)
 	assert_true(message.contains("now alive=no"), message)
 	assert_true(message.contains("not_alive×2, unbranded×1"), message)
-	var empty := Lifecycle._launch_unproven_message(2147480000, [], 0)
+	var empty := manager._launch_unproven_message(2147480000, [], 0)
 	assert_true(empty.contains("none recorded"), empty)
 func test_pre_v4_version_is_read_only_from_a_godot_ai_3x_claim() -> void:
 	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "godot-ai", "server_version": "3.2.4"}), "3.2.4")

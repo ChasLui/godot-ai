@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import threading
 import time
 from contextlib import closing
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import godot_ai
 from godot_ai import EXIT_PORT_IN_USE, main, preflight_check_port
 
 
@@ -174,6 +178,52 @@ def test_preflight_returns_nothing_on_the_ordinary_path(monkeypatch) -> None:
         reusable.bind(("127.0.0.1", port))
     finally:
         reusable.close()
+
+
+@pytest.mark.parametrize("release_after", [25.262, 45.0, None])
+def test_replacement_budget_survives_delayed_handoff_and_stays_bounded(
+    monkeypatch, release_after
+) -> None:
+    # Use the actual plugin request so this catches either side reverting its
+    # budget. A real socket stays occupied while a controlled clock advances.
+    lifecycle = (
+        Path(__file__).resolve().parents[2]
+        / "plugin/addons/godot_ai/utils/server_lifecycle.gd"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"const REPLACEMENT_WAIT_FOR_PORT_MS := ([\d_]+)", lifecycle)
+    assert match is not None
+    requested_ms = int(match[1].replace("_", ""))
+    monkeypatch.setenv("GODOT_AI_WAIT_FOR_PORT_MS", str(requested_ms))
+    holder, port = _hold_port()
+    elapsed = 0.0
+
+    def advance(_seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += 1.0
+        if release_after is not None and elapsed >= release_after:
+            holder.close()
+
+    monkeypatch.setattr(
+        godot_ai, "time", SimpleNamespace(monotonic=lambda: elapsed, sleep=advance)
+    )
+    held = None
+    try:
+        if release_after is None:
+            with pytest.raises(SystemExit) as raised:
+                preflight_check_port(port, label="HTTP", setting="godot_ai/http_port")
+            assert raised.value.code == EXIT_PORT_IN_USE
+            assert elapsed == 60.0
+        else:
+            held = preflight_check_port(port, label="HTTP", setting="godot_ai/http_port")
+            assert release_after <= elapsed < release_after + 1.0
+            assert held is not None and held.getsockname()[1] == port
+            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as other:
+                with pytest.raises(OSError):
+                    other.bind(("127.0.0.1", port))
+    finally:
+        holder.close()
+        if held is not None:
+            held.close()
 
 
 def test_preflight_still_fails_fast_without_the_wait(monkeypatch) -> None:

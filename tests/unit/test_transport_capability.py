@@ -435,11 +435,15 @@ def test_private_mkdir_passes_no_mode_on_windows(tmp_path, monkeypatch) -> None:
     assert modes == [0o777, 0o700]
 
 
-def test_windows_repair_hint_names_the_directory_and_the_godot_ai_root(tmp_path) -> None:
-    directory = tmp_path / "godot-ai" / "capabilities"
+@pytest.mark.parametrize(
+    "relative", ["godot-ai/capabilities", "godot-ai/.worktrees/project/custom/runtime"]
+)
+def test_windows_repair_hint_names_only_the_directory_to_repair(tmp_path, relative) -> None:
+    directory = tmp_path / relative
     hint = capability_module.windows_repair_hint(directory)
     assert str(directory) in hint
-    assert f'Remove-Item -Recurse -Force "{tmp_path / "godot-ai"}"' in hint
+    assert "Remove-Item" not in hint
+    assert "permissions" in hint
     assert "elevated" in hint
 
 
@@ -447,6 +451,7 @@ def test_windows_repair_hint_is_non_destructive_outside_a_godot_ai_tree(tmp_path
     hint = capability_module.windows_repair_hint(tmp_path / "custom" / "runtime")
     assert "Remove-Item" not in hint
     assert str(tmp_path / "custom" / "runtime") in hint
+    assert "permissions" in hint
 
 
 def test_directory_access_error_is_none_when_missing_or_writable(tmp_path) -> None:
@@ -475,8 +480,9 @@ def test_publishing_into_an_unwritable_directory_raises_the_repair_hint(
     with pytest.raises(OSError) as exc_info:
         write_capabilities(8122, HTTP, WEBSOCKET, instance_nonce=NONCE, directory=directory)
     assert exc_info.value.errno == errno.EACCES
-    assert "Remove-Item" in str(exc_info.value)
-    assert str(tmp_path / "godot-ai") in str(exc_info.value)
+    assert "Remove-Item" not in str(exc_info.value)
+    assert "permissions" in str(exc_info.value)
+    assert str(directory) in str(exc_info.value)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DACL inheritance")

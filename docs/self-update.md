@@ -120,7 +120,8 @@ All steps run inside the editor, on the main thread except the download.
     or any other conflict keeps the dock's explicit Restart Server
     authority. Every
     replacement launches our server before killing the occupant; that server
-    reports through its startup report the moment it reaches its port wait
+    reports through its startup report the moment it reaches its bounded
+    60-second port wait
     (a launch through uvx may spend seconds installing the new version
     first), and only then is the occupant killed. The server binds and
     listens the instant the port frees and hands that very socket to its
@@ -136,9 +137,9 @@ All steps run inside the editor, on the main thread except the download.
     configuration in memory and respawns the old bridge from it until the
     application itself is relaunched. A 4.0.4+ bridge keeps serving a server
     of the same major version and follows the replacement on its own, so the
-    dock says the clients keep working instead. That post-update replacement
-    probes with a longer timeout than an ordinary start, so a backend still
-    settling on the port is not mistaken for a foreign process.
+    dock says those clients can reconnect without restarting. Ordinary starts
+    and post-update replacement use the same three-second probe timeout, so
+    both allow a backend time to answer before reporting a blocked connection.
 
 ## The v3-to-v4 capsule
 
