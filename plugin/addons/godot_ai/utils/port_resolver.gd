@@ -189,11 +189,12 @@ static func windows_powershell_candidates() -> Array[String]:
 	var candidates: Array[String] = []
 	## Prefer an already-installed PowerShell 7 at its fixed machine path.
 	## Missing or failing installations retain every existing fallback below.
-	var program_files := OS.get_environment("ProgramFiles").replace("\\", "/").trim_suffix("/")
-	if not program_files.is_empty():
-		var pwsh := program_files.path_join("PowerShell/7/pwsh.exe")
-		if FileAccess.file_exists(pwsh):
-			candidates.append(pwsh)
+	for variable in ["ProgramW6432", "ProgramFiles"]:
+		var program_files := OS.get_environment(variable).replace("\\", "/").trim_suffix("/")
+		if not program_files.is_empty():
+			var pwsh := program_files.path_join("PowerShell/7/pwsh.exe")
+			if FileAccess.file_exists(pwsh) and not candidates.has(pwsh):
+				candidates.append(pwsh)
 	var system_root := OS.get_environment("SystemRoot")
 	if system_root.is_empty():
 		system_root = "C:/Windows"
@@ -392,17 +393,17 @@ static func capture_process_snapshot(pid: int) -> Variant:
 	if OS.get_name() != "Windows":
 		return null
 	if pid <= 1:
-		return {}
+		return {"capture_error": true}
 	var script := _windows_process_snapshot_script(pid)
 	var output: Array = []
 	if execute_windows_powershell(script, output) != 0 or output.is_empty():
-		return {}
+		return {"capture_error": true}
 	return parse_process_snapshot(str(output[0]), pid)
 
 
 static func _windows_process_snapshot_script(pid: int) -> String:
 	return (
-		"$rows = @(); $current = %d; $seen = @{}; "
+		"$rows = @(); $current = %d; $seen = @{}; $capture_failed = $false; "
 		+ "$processes = @{}; try { Get-CimInstance Win32_Process -ErrorAction Stop | "
 		+ "ForEach-Object { $processes[[int]$_.ProcessId] = $_ } } catch {}; "
 		+ "for ($depth = 0; $depth -lt 16 -and $current -gt 1; $depth++) { "
@@ -410,11 +411,11 @@ static func _windows_process_snapshot_script(pid: int) -> String:
 		+ "$p = $processes[$current]; "
 		+ "if ($null -eq $p) { "
 		+ "try { $identity = [string](Get-Process -Id $current -ErrorAction Stop).StartTime.ToFileTimeUtc(); "
-		+ "$rows += @{pid=$current;parent_pid=0;identity=$identity;commandline=''} } catch {}; break }; "
+		+ "$rows += @{pid=$current;parent_pid=0;identity=$identity;commandline=''} } catch { if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { $capture_failed = $true } }; break }; "
 		+ "$rows += @{pid=[int]$p.ProcessId;parent_pid=[int]$p.ParentProcessId; "
 		+ "identity=([string]$p.CreationDate + '|' + [string]$p.CommandLine);commandline=[string]$p.CommandLine}; "
 		+ "$current = [int]$p.ParentProcessId }; "
-		+ "ConvertTo-Json -InputObject @($rows) -Compress -Depth 3"
+		+ "if ($capture_failed) { 'null' } else { ConvertTo-Json -InputObject @($rows) -Compress -Depth 3 }"
 	) % pid
 
 
@@ -428,51 +429,62 @@ static func _capture_windows_process_snapshot_pair(pid: int) -> Array:
 	) % [query, query]
 	var output: Array = []
 	if execute_windows_powershell(script, output) != 0 or output.is_empty():
-		return [{}, {}]
+		return [{"capture_error": true}, {"capture_error": true}]
 	return _parse_process_snapshot_pair(str(output[0]), pid)
 
 
 static func _parse_process_snapshot_pair(raw: String, pid: int) -> Array:
 	if raw.length() > 4 * 1024 * 1024 + 16:
-		return [{}, {}]
-	var pair: Variant = JSON.parse_string(raw)
+		return [{"capture_error": true}, {"capture_error": true}]
+	var json := JSON.new()
+	if json.parse(raw) != OK:
+		return [{"capture_error": true}, {"capture_error": true}]
+	var pair: Variant = json.data
 	if not (pair is Array) or pair.size() != 2 or not (pair[0] is String and pair[1] is String):
-		return [{}, {}]
+		return [{"capture_error": true}, {"capture_error": true}]
 	return [parse_process_snapshot(pair[0], pid), parse_process_snapshot(pair[1], pid)]
 
 
 static func parse_process_snapshot(raw: String, expected_pid: int) -> Dictionary:
 	if raw.length() > 1024 * 1024:
-		return {}
-	var rows: Variant = JSON.parse_string(raw)
-	if not (rows is Array) or rows.is_empty() or rows.size() > 16:
-		return {}
+		return {"capture_error": true}
+	var json := JSON.new()
+	if json.parse(raw) != OK:
+		return {"capture_error": true}
+	var rows: Variant = json.data
+	if not (rows is Array) or rows.size() > 16:
+		return {"capture_error": true}
 	var snapshot := {}
 	var next_pid := expected_pid
 	for row in rows:
 		if not (row is Dictionary):
-			return {}
+			return {"capture_error": true}
 		var value: Variant = row.get("pid")
 		if (
 			not (value is int or value is float) or not is_finite(float(value))
 			or float(value) <= 1.0 or float(value) > 4294967295.0
 			or float(value) != float(int(value))
 		):
-			return {}
+			return {"capture_error": true}
 		var pid := int(value)
 		if pid <= 1 or pid != next_pid or snapshot.has(pid):
-			return {}
+			return {"capture_error": true}
 		snapshot[pid] = row
 		if _process_snapshot_row(snapshot, pid).is_empty():
-			return {}
+			return {"capture_error": true}
 		next_pid = int(row.parent_pid)
 		if snapshot.has(next_pid):
-			return {}
+			return {"capture_error": true}
 	return snapshot
 
 
+## An unavailable capture is not evidence that its PID has exited.
+static func capture_failed(snapshot: Variant) -> bool:
+	return snapshot is Dictionary and bool(snapshot.get("capture_error", false))
+
+
 static func _process_snapshot_row(snapshot: Variant, pid: int) -> Dictionary:
-	if not (snapshot is Dictionary) or pid <= 1:
+	if not (snapshot is Dictionary) or capture_failed(snapshot) or pid <= 1:
 		return {}
 	var row: Variant = snapshot.get(pid)
 	if not (row is Dictionary) or row.size() != 4:
@@ -650,6 +662,9 @@ static func capture_process_kill_grant(
 		return {}
 	var pair: Array = _capture_windows_process_snapshot_pair(pid) if OS.get_name() == "Windows" else []
 	var first: Variant = pair[0] if not pair.is_empty() else capture_process_snapshot(pid)
+	if capture_failed(first):
+		diagnostics.append("identity_unavailable")
+		return {}
 	if not pid_alive(pid, first):
 		diagnostics.append("not_alive")
 		return {}
@@ -663,6 +678,9 @@ static func capture_process_kill_grant(
 	## Close the capture window: both identity and optional lineage/brand must
 	## still describe the same process in the independently collected final snapshot.
 	var final: Variant = pair[1] if not pair.is_empty() else capture_process_snapshot(pid)
+	if capture_failed(final):
+		diagnostics.append("identity_unavailable")
+		return {}
 	if process_fingerprint(pid, final) != fingerprint:
 		diagnostics.append("fingerprint_changed")
 		return {}

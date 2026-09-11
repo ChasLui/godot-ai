@@ -127,30 +127,42 @@ func test_read_pid_file_round_trips_value() -> void:
 
 
 func test_windows_powershell_candidates_prefers_installed_path_and_preserves_fallbacks() -> void:
-	var had_program_files := OS.has_environment("ProgramFiles")
-	var program_files := OS.get_environment("ProgramFiles")
-	var candidates := McpPortResolver.windows_powershell_candidates()
-	OS.unset_environment("ProgramFiles")
+	var saved := {}
+	for key in ["ProgramW6432", "ProgramFiles"]:
+		saved[key] = {"present": OS.has_environment(key), "value": OS.get_environment(key)}
+		OS.unset_environment(key)
 	var absent := McpPortResolver.windows_powershell_candidates()
+	var root := "user://_test_pwsh_candidates"
+	var native := ProjectSettings.globalize_path(root + "/native")
+	var x86 := ProjectSettings.globalize_path(root + "/x86")
+	for path in [native, x86]:
+		DirAccess.make_dir_recursive_absolute(path.path_join("PowerShell/7"))
+		var file := FileAccess.open(path.path_join("PowerShell/7/pwsh.exe"), FileAccess.WRITE)
+		file.close()
+	OS.set_environment("ProgramW6432", native)
+	OS.set_environment("ProgramFiles", x86)
+	var candidates := McpPortResolver.windows_powershell_candidates()
+	OS.set_environment("ProgramFiles", native)
+	var duplicate := McpPortResolver.windows_powershell_candidates()
+	OS.set_environment("ProgramW6432", "")
 	OS.set_environment("ProgramFiles", "")
 	var empty := McpPortResolver.windows_powershell_candidates()
-	if had_program_files:
-		OS.set_environment("ProgramFiles", program_files)
-	else:
-		OS.unset_environment("ProgramFiles")
-	var system_root := OS.get_environment("SystemRoot")
-	if system_root.is_empty():
-		system_root = "C:/Windows"
-	var expected: Array[String] = [
-		system_root.replace("\\", "/").trim_suffix("/") + "/System32/WindowsPowerShell/v1.0/powershell.exe",
-		"powershell.exe", "pwsh.exe",
-	]
-	assert_eq(absent, expected, "missing ProgramFiles keeps every original fallback in order")
-	assert_eq(empty, expected, "empty ProgramFiles cannot introduce a relative executable path")
-	var pwsh := program_files.replace("\\", "/").trim_suffix("/").path_join("PowerShell/7/pwsh.exe")
-	if not program_files.is_empty() and FileAccess.file_exists(pwsh):
-		expected.push_front(pwsh)
-	assert_eq(candidates, expected, "only an existing installation precedes the original candidates")
+	for key in saved:
+		if saved[key].present:
+			OS.set_environment(key, saved[key].value)
+		else:
+			OS.unset_environment(key)
+	for path in [native, x86]:
+		DirAccess.remove_absolute(path.path_join("PowerShell/7/pwsh.exe"))
+		DirAccess.remove_absolute(path.path_join("PowerShell/7"))
+		DirAccess.remove_absolute(path.path_join("PowerShell"))
+		DirAccess.remove_absolute(path)
+	DirAccess.remove_absolute(root)
+	assert_eq(empty, absent, "empty environment cannot add a relative executable")
+	assert_eq(candidates.slice(0, 2), [native.path_join("PowerShell/7/pwsh.exe"), x86.path_join("PowerShell/7/pwsh.exe")])
+	assert_eq(candidates.slice(2), absent, "all previous fallbacks remain")
+	assert_eq(duplicate.size(), absent.size() + 1, "the same installation occurs once")
+	assert_eq(absent.slice(-2), ["powershell.exe", "pwsh.exe"])
 
 
 func test_windows_failed_powershell7_query_uses_existing_powershell5_fallback() -> void:
@@ -393,21 +405,21 @@ func test_process_snapshot_changed_identity_brand_and_parent_do_not_preserve_pro
 
 
 func test_process_snapshot_rejects_missing_malformed_and_tampered_records() -> void:
-	for raw in ["{}", "[]", "null", "not json", JSON.stringify([{"pid": 4242}])]:
-		assert_true(McpPortResolver.parse_process_snapshot(raw, 4242).is_empty())
+	for raw in ["{}", "null", "not json", JSON.stringify([{"pid": 4242}])]:
+		assert_true(McpPortResolver.capture_failed(McpPortResolver.parse_process_snapshot(raw, 4242)))
 	var rows := _snapshot_rows()
-	assert_true(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 5555).is_empty())
+	assert_true(McpPortResolver.capture_failed(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 5555)))
 	rows[0].commandline = "changed without changing fingerprint identity"
-	assert_true(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 4242).is_empty())
+	assert_true(McpPortResolver.capture_failed(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 4242)))
 	rows = _snapshot_rows()
 	rows[1].pid = 5555
-	assert_true(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 4242).is_empty())
+	assert_true(McpPortResolver.capture_failed(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 4242)))
 	rows = _snapshot_rows()
 	rows[1].parent_pid = 4242
-	assert_true(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 4242).is_empty(), "a cycle truncated by the collector is still invalid")
+	assert_true(McpPortResolver.capture_failed(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 4242)), "a cycle truncated by the collector is still invalid")
 	rows.resize(1)
 	rows[0].parent_pid = 4242
-	assert_true(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 4242).is_empty(), "self-parent cycles are invalid")
+	assert_true(McpPortResolver.capture_failed(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 4242)), "self-parent cycles are invalid")
 	for invalid in [{}, [], {4242: {"pid": 4242}}]:
 		assert_false(McpPortResolver.pid_alive(OS.get_process_id(), invalid), "explicit empty snapshots never query the live editor")
 		assert_eq(McpPortResolver.process_fingerprint(OS.get_process_id(), invalid), "")
@@ -433,7 +445,7 @@ func test_process_snapshot_keeps_the_sixteen_process_lineage_limit() -> void:
 	assert_true(McpPortResolver.process_descends_from(5000, 5015, snapshot))
 	assert_false(McpPortResolver.process_descends_from(5000, 5016, snapshot))
 	rows.append({"pid": 5016, "parent_pid": 0, "identity": "time|launcher", "commandline": "launcher"})
-	assert_true(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 5000).is_empty())
+	assert_true(McpPortResolver.capture_failed(McpPortResolver.parse_process_snapshot(JSON.stringify(rows), 5000)))
 
 
 func test_windows_process_snapshot_matches_live_editor_fingerprint() -> void:
@@ -462,15 +474,15 @@ func test_process_snapshot_pair_preserves_both_independent_identities() -> void:
 func test_process_snapshot_pair_rejects_invalid_envelopes_and_members() -> void:
 	var valid := JSON.stringify(_snapshot_rows())
 	for raw in ["{}", "[]", JSON.stringify([valid]), JSON.stringify([valid, valid, valid]), JSON.stringify([{}, valid]), " ".repeat(4 * 1024 * 1024 + 17)]:
-		assert_eq(McpPortResolver._parse_process_snapshot_pair(raw, 4242), [{}, {}])
-	assert_eq(McpPortResolver._parse_process_snapshot_pair(JSON.stringify([valid, valid]), 9999), [{}, {}])
+		assert_eq(McpPortResolver._parse_process_snapshot_pair(raw, 4242), [{"capture_error": true}, {"capture_error": true}])
+	assert_eq(McpPortResolver._parse_process_snapshot_pair(JSON.stringify([valid, valid]), 9999), [{"capture_error": true}, {"capture_error": true}])
 	for invalid in ["{}", JSON.stringify([{"pid": 4242}]), " ".repeat(1024 * 1024 + 1)]:
 		var pair := McpPortResolver._parse_process_snapshot_pair(JSON.stringify([valid, invalid]), 4242)
 		assert_eq(McpPortResolver.process_commandline(4242, pair[0]), str(_snapshot_rows()[0].commandline))
-		assert_true(pair[1].is_empty(), "an invalid final member cannot reuse the first snapshot")
+		assert_true(McpPortResolver.capture_failed(pair[1]), "an invalid final member cannot reuse the first snapshot")
 		assert_eq(McpPortResolver.process_fingerprint(4242, pair[1]), "")
 		pair = McpPortResolver._parse_process_snapshot_pair(JSON.stringify([invalid, valid]), 4242)
-		assert_true(pair[0].is_empty())
+		assert_true(McpPortResolver.capture_failed(pair[0]))
 		assert_eq(McpPortResolver.process_commandline(4242, pair[1]), str(_snapshot_rows()[0].commandline))
 
 
@@ -490,3 +502,39 @@ func test_listener_tool_preflight_is_inert_outside_linux() -> void:
 		skip("Isolated Linux PATH cases run in the integration fixture")
 		return
 	assert_eq(McpPortResolver.listener_tools_problem(), "")
+
+
+func test_process_capture_distinguishes_absence_from_unavailable_evidence() -> void:
+	var absent := McpPortResolver.parse_process_snapshot("[]", 4242)
+	assert_eq(absent, {})
+	assert_false(McpPortResolver.capture_failed(absent))
+	for raw in ["", "null", "not JSON", "{}", "[{bad", JSON.stringify([{"pid": 4242}])]:
+		var failed := McpPortResolver.parse_process_snapshot(raw, 4242)
+		assert_true(McpPortResolver.capture_failed(failed), raw)
+		assert_false(McpPortResolver.pid_alive(OS.get_process_id(), failed))
+		assert_eq(McpPortResolver.process_fingerprint(OS.get_process_id(), failed), "")
+		assert_false(McpPortResolver.pid_cmdline_is_godot_ai(OS.get_process_id(), failed))
+		assert_false(McpPortResolver.process_descends_from(OS.get_process_id(), OS.get_process_id(), failed))
+	var mixed := McpPortResolver.parse_process_snapshot(JSON.stringify(_snapshot_rows()), 4242)
+	mixed["capture_error"] = true
+	assert_eq(McpPortResolver.process_fingerprint(4242, mixed), "", "failure cannot carry usable rows")
+
+
+func test_windows_capture_distinguishes_get_process_not_found_and_permission_error() -> void:
+	if OS.get_name() != "Windows":
+		skip("Windows PowerShell process collector")
+		return
+	for category in ["ObjectNotFound", "PermissionDenied"]:
+		var output: Array = []
+		var script := (
+			"function Get-CimInstance { throw 'CIM unavailable' }; "
+			+ "function Get-Process { [CmdletBinding()]param($Id); Write-Error -Message 'unavailable' -Category %s -ErrorAction Stop }; "
+		) % category + McpPortResolver._windows_process_snapshot_script(4242)
+		assert_eq(McpPortResolver.execute_windows_powershell(script, output), 0)
+		assert_false(output.is_empty())
+		var captured := McpPortResolver.parse_process_snapshot(str(output[0]), 4242)
+		assert_eq(McpPortResolver.capture_failed(captured), category == "PermissionDenied", category)
+		assert_false(McpPortResolver.pid_alive(4242, captured))
+	var diagnostics: Array = []
+	assert_eq(McpPortResolver.capture_process_kill_grant(2147483000, false, diagnostics), {})
+	assert_eq(diagnostics, ["not_alive"], "a successfully observed absent PID is distinct from query failure")

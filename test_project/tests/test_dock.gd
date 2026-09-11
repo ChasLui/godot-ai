@@ -780,6 +780,59 @@ func test_update_dialog_defers_until_confirmation() -> void:
 	dock.free()
 
 
+func test_teardown_preserves_native_progress_dialog_from_owned_windows() -> void:
+	var root := EditorInterface.get_base_control().get_tree().root
+	var dialogs := root.find_children("*", "ProgressDialog", true, false)
+	assert_eq(dialogs.size(), 1, "the live editor must have one shared native progress dialog")
+	if dialogs.size() != 1:
+		return
+	var progress: Node = dialogs[0]
+	assert_true(progress.is_class("ProgressDialog"), "the fixture must borrow the native editor object")
+	if bool(progress.call("is_visible")):
+		skip("the editor is currently using its shared progress dialog")
+		return
+	var progress_id := progress.get_instance_id()
+	for host_property in ["_update_confirm", "_tools_close_confirm"]:
+		var dock := McpDockScript.new()
+		dock.hide()
+		root.add_child(dock)
+		dock.set_process(false)
+		var host: Window = dock.get(host_property)
+		var owned_ids := [
+			dock._update_confirm.get_instance_id(),
+			dock._tools_close_confirm.get_instance_id(),
+			dock._clients_window.get_instance_id(),
+		]
+		progress.reparent(host)
+		var adopted := progress.get_parent() == host
+		dock.release_editor_progress_dialog()
+		var released := progress.get_parent() == root
+		dock.release_editor_progress_dialog()
+		var repeated_release := progress.get_parent() == root
+		## Rescue independently of the implementation before freeing the fixture,
+		## so a failed assertion cannot destroy the editor's shared native object.
+		if progress.get_parent() != root:
+			progress.reparent(root)
+		dock.free()
+		assert_true(adopted, "%s must reproduce the stranded parent" % host_property)
+		assert_true(released, "%s must release progress before dock destruction" % host_property)
+		assert_true(repeated_release, "releasing twice must be harmless")
+		assert_true(is_instance_id_valid(progress_id), "the same native object must survive teardown")
+		assert_eq(progress.get_instance_id(), progress_id)
+		assert_eq(progress.get_parent(), root)
+		for owned_id in owned_ids:
+			assert_false(is_instance_id_valid(owned_id), "plugin-owned windows must still be destroyed")
+
+
+func test_release_editor_progress_dialog_outside_tree_is_harmless() -> void:
+	var dock := McpDockScript.new()
+	dock._build_ui()
+	var confirmation := dock._update_confirm
+	dock.release_editor_progress_dialog()
+	assert_eq(confirmation.get_parent(), dock, "off-tree cleanup must leave owned UI intact")
+	dock.free()
+
+
 func test_successful_configure_discloses_the_scope_sweep_on_the_row() -> void:
 	## #877: `_show_manual_command_for` — the only thing that reveals the panel
 	## listing the pre-cleanup removes — is called just once, on the Configure
@@ -1804,23 +1857,28 @@ func test_incompatible_server_body_uses_actionable_message() -> void:
 	assert_contains(body, "change both HTTP and WS ports")
 
 
-func test_incompatible_server_hides_http_only_port_picker() -> void:
-	## Incompatible godot-ai servers commonly hold both HTTP and WS ports.
-	## The quick picker only changes HTTP, so showing it here advertises a
-	## partial recovery path that can leave the editor disconnected.
+func test_foreign_incompatible_server_offers_both_port_picker() -> void:
 	_dock._build_ui()
 	_dock._update_crash_panel({
 		"state": McpServerState.INCOMPATIBLE,
 		"message": "Port 8000 is occupied by godot-ai server v1.2.10",
 	})
 	assert_true(_dock._crash_panel.visible, "diagnostic panel still shows")
-	assert_false(_dock._port_picker_panel.visible, "HTTP-only picker must stay hidden")
+	assert_true(_dock._port_picker_panel.visible, "both-port picker must offer a safe escape")
+	assert_false(_dock._crash_restart_btn.visible, "unproven ownership must not offer restart")
+	var spy := _SettingsApplySpy.new()
+	_dock.settings_apply_requested.connect(spy.on_apply)
+	_dock._port_picker_panel._spinbox.value = 23001
+	_dock._port_picker_panel._ws_spinbox.value = 23002
+	_dock._port_picker_panel._on_apply_pressed()
+	assert_eq(spy.captured, [{"changes": {"http_port": 23001, "ws_port": 23002}, "reload": true}])
+	_dock.settings_apply_requested.disconnect(spy.on_apply)
 
 
 func test_foreign_incompatible_body_names_concrete_free_ports() -> void:
 	## Issue #607 cheap version: the foreign-occupant crash body should hand
 	## the user concrete free ports (reservation-aware on Windows) and point
-	## them at Editor Settings + the client reconfigure, instead of leaving
+	## them at the two-port picker + client reconfigure, instead of leaving
 	## them to hunt for a port themselves. Names BOTH http and ws: this branch
 	## also fires for an incompatible godot-ai server that commonly holds both
 	## ports, so suggesting only http would leave the new server unable to
@@ -1836,10 +1894,9 @@ func test_foreign_incompatible_body_names_concrete_free_ports() -> void:
 		"foreign-occupant body must name a concrete free HTTP port")
 	assert_contains(body, "%d (WS)" % free_ws,
 		"foreign-occupant body must name a concrete free WS port")
-	assert_contains(body, "godot_ai/http_port",
-		"foreign-occupant body must point at the HTTP Editor Setting to change")
-	assert_contains(body, "godot_ai/ws_port",
-		"foreign-occupant body must point at the WS Editor Setting too")
+	assert_contains(body, "Apply + Reload", "guidance must point at the effective-pair picker")
+	assert_contains(body, "Configure", "clients need the new pair after reload")
+	assert_false(body.contains("godot_ai/http_port"), "legacy keys may be shadowed by a v4 pair")
 
 
 func test_recoverable_incompatible_body_keeps_restart_copy() -> void:
@@ -1893,6 +1950,8 @@ func test_recoverable_incompatible_hides_docs_link_button() -> void:
 	})
 	assert_false(_dock._crash_docs_btn.visible,
 		"recoverable case keeps Restart Server, not the docs link")
+	assert_false(_dock._port_picker_panel.visible, "owned recovery retains its restart path")
+	assert_true(_dock._crash_restart_btn.visible, "proven-owned server can be restarted")
 
 
 # --- Signal-emit contracts on the audit-v2 #360 extracted subpanels ---

@@ -33,17 +33,28 @@ var refusal_reason := "The independent activation handoff was refused."
 
 
 func start(package: Dictionary) -> bool:
-	if _phase != Phase.IDLE or not is_inside_tree():
+	if _phase != Phase.IDLE:
+		refusal_reason = "The activation runner has already started."
+		return false
+	if not is_inside_tree():
+		refusal_reason = "The activation runner must belong to the editor scene tree."
 		return false
 	if not str(get_script().resource_path).is_empty():
+		refusal_reason = "The activation runner must be source-free before replacing its files."
 		return false  # A file-backed runner can be replaced by the scan it starts.
-	if package.get("stage_root") != STAGE_ROOT or not package.get("record") is Dictionary:
+	if package.get("stage_root") != STAGE_ROOT:
+		refusal_reason = "The update stage root does not match the verified activation location."
+		return false
+	if not package.get("record") is Dictionary:
+		refusal_reason = "The update handoff requires an installer record Dictionary."
 		return false
 	var record: Dictionary = package.record
 	for key in ["from_version", "to_version", "manifest_sha256", "expected_tree_sha256", "editor_nonce"]:
 		if not record.get(key) is String or str(record[key]).is_empty():
+			refusal_reason = "The update record requires a nonempty String field: %s." % key
 			return false
 	if not record.get("replace_owned_mismatches") is bool:
+		refusal_reason = "The update record requires a boolean replace_owned_mismatches field."
 		return false
 	# Copy only values that belong to the existing installer's swap record.
 	_package = {"stage_root": STAGE_ROOT, "record": {}}
@@ -52,14 +63,18 @@ func start(package: Dictionary) -> bool:
 	_installer = ResourceLoader.load(INSTALLER_PATH, "", ResourceLoader.CACHE_MODE_IGNORE_DEEP) as Script
 	_verifier = ResourceLoader.load(VERIFIER_PATH, "", ResourceLoader.CACHE_MODE_IGNORE_DEEP) as Script
 	if _installer == null or _verifier == null:
+		refusal_reason = "The update installer or release verifier script could not be loaded."
 		return false
 	for method in ["swap", "verify_after_restart", "release_lock", "read_lock", "discard_stage"]:
 		if not _declares(_installer, method):
+			refusal_reason = "The update installer is missing its required %s method." % method
 			return false
 	if not _declares(_verifier, "hash_tree"):
+		refusal_reason = "The release verifier is missing its required hash_tree method."
 		return false
 	var lock: Dictionary = _installer.call("read_lock")
 	if int(lock.get("pid", 0)) != OS.get_process_id() or str(lock.get("fingerprint", "")).is_empty():
+		refusal_reason = "The update lock does not identify this editor with a process fingerprint."
 		return false
 	_inspected_objects.clear()
 	_inspection_budget = 100000
@@ -362,6 +377,15 @@ func _show_failure(message: String) -> void:
 	dialog.title = "Godot AI update needs attention"
 	dialog.dialog_text = message + "\nUpdate evidence: res://addons/.godot_ai_update/"
 	add_child(dialog)
-	dialog.confirmed.connect(queue_free)
-	dialog.canceled.connect(queue_free)
+	dialog.confirmed.connect(_dismiss_failure)
+	dialog.canceled.connect(_dismiss_failure)
 	dialog.popup_centered(Vector2i(620, 220))
+
+
+func _dismiss_failure() -> void:
+	## Godot may have left its shared progress dialog under the failure window.
+	## Return it before freeing our subtree and leaving the editor's pointer dangling.
+	if is_inside_tree():
+		for dialog in find_children("*", "ProgressDialog", true, false):
+			dialog.reparent(get_tree().root)
+	queue_free()

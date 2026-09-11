@@ -671,7 +671,9 @@ class AttachedAgent:
                             matches = [row for row in sessions.data.get("sessions", [])
                                        if Path(row["project_path"]).resolve()
                                        == self.project_dir.resolve()]
-                            assert len(matches) == 1, "expected the updated fixture editor session"
+                            assert len(matches) == 1, (
+                                f"expected one updated fixture editor session; found {len(matches)}"
+                            )
                             session_id = matches[0]["session_id"]
                             state = await client.call_tool(
                                 "editor_state", {"session_id": session_id}
@@ -684,7 +686,10 @@ class AttachedAgent:
                             parsed = configparser.ConfigParser()
                             parsed.read_string(cfg.data["content"])
                             version = parsed["plugin"]["version"].strip('"')
-                            assert version == receipt["server_version"]
+                            assert version == receipt["server_version"], (
+                                f"updated plugin version {version!r}; "
+                                f"expected server version {receipt['server_version']!r}"
+                            )
                             self.post_update = {"version": version, "session_id": session_id}
                             (self.project_dir / "_test_same_bridge_post_update.json").write_text(
                                 json.dumps(self.post_update), encoding="utf-8",
@@ -974,6 +979,7 @@ var _repin_observed := false
 var _tool_probe_ready := false
 var _finished := false
 var _status_wait_started_ms := 0
+var _agent_gate_started_ms := -1
 var _pre_instance_id := ""
 var _last_native_status := ""
 
@@ -1059,7 +1065,9 @@ func _process(_delta: float) -> void:
 \t\t\tpre_file.store_string(pre_id)
 \t\t\tpre_file.close()
 \t\tif AGENT_GATE and not FileAccess.file_exists(AGENT_GATE_PATH):
-\t\t\tif Time.get_ticks_msec() > STATUS_WAIT_MS:
+\t\t\tif _agent_gate_started_ms < 0:
+\t\t\t\t_agent_gate_started_ms = Time.get_ticks_msec()
+\t\t\tif Time.get_ticks_msec() - _agent_gate_started_ms > STATUS_WAIT_MS:
 \t\t\t\t_fail(16, "the attached agent never made a successful call")
 \t\t\treturn
 \t\tif not _update_candidate_ready():
@@ -1337,6 +1345,9 @@ static func fetch_status(port: int) -> Dictionary:
 \tif not http.has_response() or http.get_response_code() != 200:
 \t\treturn {}
 \tvar expected_size := http.get_response_body_length()
+\tvar chunked := http.is_response_chunked()
+\tif expected_size < 0 and not chunked:
+\t\treturn {}
 \tif expected_size > MAX_STATUS_BYTES:
 \t\treturn {}
 \tvar body := PackedByteArray()
@@ -1353,6 +1364,8 @@ static func fetch_status(port: int) -> Dictionary:
 \t\t\tOS.delay_msec(5)
 \t\tif Time.get_ticks_msec() > deadline:
 \t\t\treturn {}
+\tif chunked and http.get_status() != HTTPClient.STATUS_CONNECTED:
+\t\treturn {}
 \tif body.is_empty() or (expected_size >= 0 and body.size() != expected_size):
 \t\treturn {}
 \tvar json := JSON.new()

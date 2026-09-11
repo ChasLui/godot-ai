@@ -855,14 +855,15 @@ func test_startup_report_summary_quotes_the_server_failure() -> void:
 
 
 func test_launch_unproven_message_summarises_the_refusals() -> void:
-	var message := Lifecycle._launch_unproven_message(
+	var manager := Lifecycle.new()
+	var message := manager._launch_unproven_message(
 		2147480000, ["not_alive", "not_alive", "unbranded"], 15200
 	)
 	assert_true(message.contains("3 attempts over 15.2 s"), message)
 	assert_true(message.contains("pid 2147480000"), message)
 	assert_true(message.contains("now alive=no"), message)
 	assert_true(message.contains("not_alive×2, unbranded×1"), message)
-	var empty := Lifecycle._launch_unproven_message(2147480000, [], 0)
+	var empty := manager._launch_unproven_message(2147480000, [], 0)
 	assert_true(empty.contains("none recorded"), empty)
 func test_pre_v4_version_is_read_only_from_a_godot_ai_3x_claim() -> void:
 	assert_eq(Lifecycle.pre_v4_version_from_status({"name": "godot-ai", "server_version": "3.2.4"}), "3.2.4")

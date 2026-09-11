@@ -307,6 +307,15 @@ func _notification(what: int) -> void:
 			_refresh_setup_status.call_deferred()
 
 
+## Godot can leave its shared progress dialog under one of our modal windows.
+## Return it before removing the dock: freeing it leaves the editor's pointer dangling.
+func release_editor_progress_dialog() -> void:
+	if not is_inside_tree():
+		return
+	for dialog in find_children("*", "ProgressDialog", true, false):
+		dialog.reparent(get_tree().root)
+
+
 func _should_refresh_client_statuses_on_focus_in() -> bool:
 	## Focus-in is part of Godot/editor window activation. Keep automatic refresh,
 	## but only through the async/cooldown-protected path; never run a blocking
@@ -958,6 +967,8 @@ func _update_crash_panel(server_status: Dictionary) -> void:
 	var conflict_port := int(server_status.get("conflict_port", 0))
 	var port_picker_visible := (
 		state == ServerStateScript.PORT_EXCLUDED or state == ServerStateScript.FOREIGN_PORT
+		or (state == ServerStateScript.INCOMPATIBLE
+			and not bool(server_status.get("can_recover_incompatible", false)))
 	)
 	_port_picker_panel.visible = port_picker_visible
 	if port_picker_visible:
@@ -1041,13 +1052,13 @@ static func _crash_body_for_state(state: int, server_status: Dictionary = {}) ->
 ## server we can't prove we own, which commonly holds both ports — moving only
 ## http would then leave the new server unable to bind ws. Both suggestions are
 ## routed through `suggest_free_port` so they clear Windows' winnat reservation
-## table (no point suggesting a port that 10013s on bind). Only the http port
-## reaches client configs; the ws port is server↔plugin, hence the wording.
+## table (no point suggesting a port that 10013s on bind). Both ports reach
+## the client's attach command, so clients must be reconfigured afterwards.
 ## The per-client reconfigure steps live behind the crash panel's docs link.
 static func _free_port_hint(port: int) -> String:
 	var free_http := ClientConfigurator.suggest_free_port(port + 1)
 	var free_ws := ClientConfigurator.suggest_free_port(ClientConfigurator.ws_port() + 1)
-	return "Ports %d (HTTP) and %d (WS) are free — set `godot_ai/http_port` and `godot_ai/ws_port` in Editor Settings, then update your client config with the new HTTP port (How to change the port, below)." % [free_http, free_ws]
+	return "Suggested ports: %d (HTTP) and %d (WS). Choose both ports below, click Apply + Reload, then Configure your AI clients to use the new pair." % [free_http, free_ws]
 
 
 ## URL for the port-conflict guide, pinned to the release tag that matches the

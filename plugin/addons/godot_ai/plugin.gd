@@ -1117,6 +1117,7 @@ func _exit_tree() -> void:
 		_dispatcher.release_after_teardown()
 
 	if _dock:
+		_dock.release_editor_progress_dialog()
 		remove_control_from_docks(_dock)
 		_dock.queue_free()
 		_dock = null

@@ -897,7 +897,7 @@ func _process(_delta: float) -> void:
     assert "V3_BRIDGE_TEST | dirty scene, selection and undo/redo preserved" in log
     assert f"MCP | update activation completed in editor PID {initial_editor['pid']}" in log
     assert "Failed to create an autoload" not in log, log
-    disable = log.find("MCP | v3 bridge handing verified tree to in-editor activation")
+    disable = log.find("MCP | update runner disabling old plugin")
     assert disable >= 0, log
     for pattern in (
         "SCRIPT ERROR:",

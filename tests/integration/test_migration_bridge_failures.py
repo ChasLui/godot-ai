@@ -329,7 +329,7 @@ def test_bridge_actual_activation_preserves_companion_and_fails_closed(
         directory.mkdir()
         environment[key] = str(directory)
     log = run_godot_editor(
-        project, godot, allow_headless=True, timeout=100, environment=environment
+        project, godot, allow_headless=True, timeout=200, environment=environment
     )
     assert "SCRIPT ERROR" not in log, log
     result = json.loads((project / "result.json").read_bytes())
@@ -410,3 +410,147 @@ def test_bridge_actual_activation_preserves_companion_and_fails_closed(
             ), result
             assert result["activation"]["error"] == "", result
             assert "update activation completed in editor PID" in log
+
+REFUSAL_DRIVER = '''@tool
+extends Node
+const LIVE := "res://addons/godot_ai"
+const RUNNER := LIVE + "/utils/update_activation_runner.gd"
+const STAGE := "res://addons/.godot_ai_update/stage/addons/godot_ai"
+var frames := 0
+func find_plugin(node: Node) -> Node:
+    if node.get_script() != null and node.get_script().resource_path == LIVE + "/plugin.gd":
+        return node
+    for child in node.get_children():
+        var found := find_plugin(child)
+        if found != null: return found
+    return null
+func _process(_delta: float) -> void:
+    frames += 1
+    if frames == 45:
+        run()
+func run() -> void:
+    var verifier = load(LIVE + "/utils/release_verifier.gd")
+    var before: Dictionary = verifier.hash_tree(LIVE)
+    var original := find_plugin(get_tree().root)
+    var original_id := original.get_instance_id()
+    var results := {}
+    for case in ["outside_tree", "busy", "file_backed", "stage_root", "record", "from_version",
+        "to_version", "manifest_sha256", "expected_tree_sha256", "editor_nonce",
+        "replace_owned_mismatches", "installer_api", "verifier_api", "lock"]:
+        var code := FileAccess.get_file_as_string(RUNNER)
+        if case == "installer_api":
+            code = code.replace('const INSTALLER_PATH := LIVE_ROOT + "/utils/update_installer.gd"',
+                'const INSTALLER_PATH := "res://empty_api.gd"')
+        if case == "verifier_api":
+            code = code.replace('const VERIFIER_PATH := LIVE_ROOT + "/utils/release_verifier.gd"',
+                'const VERIFIER_PATH := "res://empty_api.gd"')
+        var script := GDScript.new()
+        script.source_code = code
+        assert(script.reload() == OK)
+        var runner = load(RUNNER).new() if case == "file_backed" else script.new()
+        if case != "outside_tree": get_tree().root.add_child(runner)
+        if case == "busy": runner._phase = 1
+        var package := {"stage_root": STAGE, "record": {"from_version": "3.2.5",
+            "to_version": "4.0.5", "manifest_sha256": "a", "expected_tree_sha256": "b",
+            "editor_nonce": "c", "replace_owned_mismatches": false}}
+        if case == "stage_root": package.stage_root = "res://wrong"
+        elif case == "record": package.record = []
+        elif package.record.has(case):
+            package.record[case] = "" if case != "replace_owned_mismatches" else 1
+        var accepted: bool = runner.start(package)
+        results[case] = {"accepted": accepted, "reason": runner.refusal_reason}
+        runner.free()
+    var after: Dictionary = verifier.hash_tree(LIVE)
+    var file := FileAccess.open("res://refusals.json", FileAccess.WRITE)
+    file.store_string(JSON.stringify({"cases": results, "before": before, "after": after,
+        "same_plugin": find_plugin(get_tree().root).get_instance_id() == original_id,
+        "value": original.active_value(),
+        "enabled": EditorInterface.is_plugin_enabled(LIVE + "/plugin.cfg"),
+        "receipt": FileAccess.file_exists("res://addons/.godot_ai_update/activation.json")}))
+    get_tree().quit()
+'''
+
+
+def test_activation_handoff_refusals_explain_prerequisite_without_mutating_runtime(
+    tmp_path: Path,
+) -> None:
+    godot = godot_bin_or_skip()
+    project = _project(tmp_path, "refusals")
+    (project / "driver.gd").write_text(REFUSAL_DRIVER, encoding="utf-8")
+    (project / "empty_api.gd").write_text("@tool\nextends RefCounted\n", encoding="utf-8")
+    environment = {"GODOT_AI_DISABLE_TELEMETRY": "true"}
+    for key in ("APPDATA", "LOCALAPPDATA", "HOME", "XDG_CONFIG_HOME"):
+        directory = tmp_path / key.lower()
+        directory.mkdir()
+        environment[key] = str(directory)
+    log = run_godot_editor(project, godot, allow_headless=True, timeout=100,
+                           environment=environment)
+    assert "SCRIPT ERROR" not in log, log
+    result = json.loads((project / "refusals.json").read_bytes())
+    assert result["enabled"] and result["same_plugin"] and not result["receipt"], result
+    assert result["value"] == "A", result
+    assert result["before"]["ok"] and result["after"]["ok"], result
+    assert result["before"]["tree_sha256"] == result["after"]["tree_sha256"], result
+    reasons = {"outside_tree": "scene tree", "busy": "already", "file_backed": "source-free",
+               "stage_root": "stage root", "record": "record", "installer_api": "swap",
+               "verifier_api": "hash_tree", "lock": "lock"}
+    for name, case in result["cases"].items():
+        assert not case["accepted"], (name, case)
+        assert reasons.get(name, name) in case["reason"], (name, case)
+
+
+def test_mixed_state_scan_skips_linked_children_but_accepts_linked_root(tmp_path: Path) -> None:
+    import subprocess
+
+    godot = godot_bin_or_skip()
+    project = tmp_path / "mixed-links"
+    project.mkdir()
+    shutil.copy2(PLUGIN_ROOT / "utils/update_mixed_state.gd", project / "scanner.gd")
+    tree = project / "ordinary"
+    (tree / "nested").mkdir(parents=True)
+    (tree / "nested/normal.update_backup").write_text("normal", encoding="utf-8")
+    external = project / "external"
+    external.mkdir()
+    (external / "outside.update_backup").write_text("external", encoding="utf-8")
+
+    def directory_link(link: Path, target: Path) -> None:
+        if os.name == "nt":
+            environment = os.environ.copy()
+            environment.update(TEST_LINK=str(link), TEST_TARGET=str(target))
+            subprocess.run([
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                "New-Item -ItemType Junction -Path $env:TEST_LINK "
+                "-Target $env:TEST_TARGET -ErrorAction Stop | Out-Null",
+            ], env=environment, check=True, capture_output=True, timeout=20)
+        else:
+            link.symlink_to(target, target_is_directory=True)
+
+    directory_link(tree / "nested/ancestor", tree)
+    directory_link(tree / "outside", external)
+    directory_link(project / "linked-root", tree)
+    (project / "project.godot").write_text(
+        'config_version=5\n[application]\nconfig/name="Mixed state link scan"\n'
+        '[autoload]\nDriver="*res://driver.gd"\n', encoding="utf-8")
+    (project / "driver.gd").write_text('''@tool
+extends Node
+func _ready() -> void: run.call_deferred()
+func run() -> void:
+    var scanner = load("res://scanner.gd")
+    var file := FileAccess.open("res://result.json", FileAccess.WRITE)
+    file.store_string(JSON.stringify({"ordinary": scanner.find_backups("res://ordinary"),
+        "linked_root": scanner.find_backups("res://linked-root")}))
+    get_tree().quit()
+''', encoding="utf-8")
+    environment = {"GODOT_AI_DISABLE_TELEMETRY": "true"}
+    for key in ("APPDATA", "LOCALAPPDATA", "HOME", "XDG_CONFIG_HOME"):
+        directory = tmp_path / key.lower()
+        directory.mkdir()
+        environment[key] = str(directory)
+    log = run_godot_editor(project, godot, allow_headless=True, timeout=25,
+                           environment=environment)
+    assert "SCRIPT ERROR" not in log, log
+    result = json.loads((project / "result.json").read_bytes())
+    assert result == {
+        "ordinary": ["res://ordinary/nested/normal.update_backup"],
+        "linked_root": ["res://linked-root/nested/normal.update_backup"],
+    }

@@ -1217,3 +1217,55 @@ def test_printed_manual_launcher_preserves_isolation_and_exact_argv(
     if os.name == "nt":
         assert CAPABILITY_DIR_ENV not in captured["environment"]
     assert os.environ["CODEX_HOME"] == "host-must-not-be-used"
+
+
+@pytest.mark.parametrize("match_count,version,expected", [
+    (0, "4.0.5", "found 0"), (2, "4.0.5", "found 2"),
+    (1, "4.0.4", "updated plugin version '4.0.4'; expected server version '4.0.5'"),
+])
+async def test_attached_agent_poll_errors_identify_mismatch(
+    tmp_path, monkeypatch, match_count, version, expected,
+):
+    from types import SimpleNamespace
+
+    import fastmcp
+
+    from tests.integration import _self_update_fixture as fixture
+
+    agent = fixture.AttachedAgent(tmp_path, 18000, 19000,
+                                  capability_dir=tmp_path, environment={})
+    (tmp_path / fixture.PRE_INSTANCE_ID_FILE).write_text("nonce", encoding="utf-8")
+    (tmp_path / fixture.POST_UPDATE_STATUS_FILE).write_text(
+        json.dumps({"server_version": "4.0.5"}), encoding="utf-8",
+    )
+    monkeypatch.setattr(fixture, "read_capabilities",
+                        lambda *_args: SimpleNamespace(instance_nonce="nonce"))
+
+    class Client:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def call_tool(self, name, _params, **_kwargs):
+            if name == "session_manage":
+                if match_count != 1:
+                    agent._stop.set()
+                return SimpleNamespace(data={"sessions": [
+                    {"project_path": str(tmp_path), "session_id": f"fixture-{index}"}
+                    for index in range(match_count)
+                ]})
+            if name == "filesystem_manage":
+                agent._stop.set()
+                return SimpleNamespace(data={"content": f'[plugin]\nversion="{version}"\n'})
+            return SimpleNamespace(is_error=False)
+
+    monkeypatch.setattr(fastmcp, "Client", Client)
+    await agent._poll()
+    assert len(agent.errors) == 1
+    assert expected in agent.errors[0]
+    assert agent.post_update == {}

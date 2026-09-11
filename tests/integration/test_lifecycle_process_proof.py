@@ -112,6 +112,8 @@ def test_real_lifecycle_proof_revalidates_pid_hints_and_final_identity(tmp_path:
             result = json.loads((project / "result.json").read_text(encoding="utf-8"))
             assert result["failures"] == [], result
             assert {row["case"]: row["reason"] for row in result["rows"]} == {
+                "initial_capture_failure": "identity_unavailable",
+                "final_capture_failure": "identity_unavailable", "exited_launcher": "launch_gone",
                 "owned_child": "ok", "changed_hint": "ok", "stale_hint_corrected": "ok",
                 "unrelated_hint_corrected": "ok", "unrelated_hint_retained": "listener_pid",
                 "wrong_launch_identity": "launch_replaced",
