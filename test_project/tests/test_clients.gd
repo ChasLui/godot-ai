@@ -26,6 +26,8 @@ var _had_http_port_setting := false
 var _saved_http_port: Variant = null
 var _had_ws_port_setting := false
 var _saved_ws_port: Variant = null
+var _had_v4_endpoint_ports := false
+var _saved_v4_endpoint_ports: Variant = null
 ## Same reason as the ports: these tests drive godot_ai/mcp_client_scope
 ## through its valid and invalid values and must not leave the editor
 ## registering at a scope the user never chose.
@@ -69,6 +71,11 @@ func suite_setup(_ctx: Dictionary) -> void:
 		_had_ws_port_setting = es.has_setting(McpClientConfigurator.SETTING_WS_PORT)
 		if _had_ws_port_setting:
 			_saved_ws_port = es.get_setting(McpClientConfigurator.SETTING_WS_PORT)
+		_had_v4_endpoint_ports = es.has_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS)
+		if _had_v4_endpoint_ports:
+			_saved_v4_endpoint_ports = es.get_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS)
+			if _saved_v4_endpoint_ports is Dictionary or _saved_v4_endpoint_ports is Array:
+				_saved_v4_endpoint_ports = _saved_v4_endpoint_ports.duplicate(true)
 		_had_client_scope_setting = es.has_setting(McpSettings.SETTING_CLIENT_SCOPE)
 		if _had_client_scope_setting:
 			_saved_client_scope = es.get_setting(McpSettings.SETTING_CLIENT_SCOPE)
@@ -5640,6 +5647,7 @@ func _clear_port_settings() -> void:
 	var es := EditorInterface.get_editor_settings()
 	if es == null:
 		return
+	es.erase(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS)
 	es.set_setting(McpSettings.SETTING_HTTP_PORT, McpClientConfigurator.DEFAULT_HTTP_PORT)
 	es.set_setting(McpClientConfigurator.SETTING_WS_PORT, McpClientConfigurator.DEFAULT_WS_PORT)
 
@@ -5656,6 +5664,13 @@ func _restore_port_settings() -> void:
 		es.set_setting(McpClientConfigurator.SETTING_WS_PORT, _saved_ws_port)
 	elif es.has_setting(McpClientConfigurator.SETTING_WS_PORT):
 		es.erase(McpClientConfigurator.SETTING_WS_PORT)
+	if _had_v4_endpoint_ports:
+		var saved: Variant = _saved_v4_endpoint_ports
+		if saved is Dictionary or saved is Array:
+			saved = saved.duplicate(true)
+		es.set_setting(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS, saved)
+	else:
+		es.erase(McpClientConfigurator.SETTING_V4_ENDPOINT_PORTS)
 	_restore_client_scope()
 
 
@@ -6504,3 +6519,28 @@ func test_codebuddy_descriptor_and_stdio_entry() -> void:
 	assert_false(entry.has("url"))
 	assert_false(entry.has("headers"))
 	assert_true(McpJsonStrategy.verify_entry(c, entry, "http://unused", launch))
+
+
+func test_toml_crlf_reconfigure_and_remove_keep_complete_newlines() -> void:
+	var path := _scratch_dir.path_join("crlf_lines.toml")
+	var client := _make_test_toml_client(path)
+	var source := "[mcp_servers.godot-ai]\r\nurl = \"old\"\r\nenabled = false\r\n"
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(source)
+	file.close()
+	assert_eq(McpTomlStrategy.configure(client, "godot-ai", "http://127.0.0.1:8000/mcp").get("status"), "ok")
+	var written := FileAccess.get_file_as_bytes(path).get_string_from_utf8()
+	assert_true(written.ends_with("\n"), "reconfigured CRLF file must not end in bare CR")
+	assert_true(written.contains("enabled = false\r\n"), "preserved final assignment keeps CRLF")
+	file = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(written + "[other]\r\nkeep = true\r\n")
+	file.close()
+	assert_eq(McpTomlStrategy.remove(client, "godot-ai").get("status"), "ok")
+	written = FileAccess.get_file_as_bytes(path).get_string_from_utf8()
+	assert_true(written.ends_with("\n"), "remove keeps a complete final newline")
+	assert_true(written.contains("keep = true\r\n"), "foreign final assignment stays intact")
+	file = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(source)
+	file.close()
+	assert_eq(McpTomlStrategy.remove(client, "godot-ai").get("status"), "ok")
+	assert_eq(FileAccess.get_file_as_bytes(path).size(), 0, "removing the only section keeps an empty file")

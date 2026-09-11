@@ -1158,6 +1158,25 @@ static func fetch_status(port: int) -> Dictionary:
 \treturn parsed
 
 
+static func fetch_selected_status(plugin: EditorPlugin) -> Dictionary:
+\tvar policy: Variant = plugin.get("_endpoint_policy")
+\tif not policy is Dictionary:
+\t\treturn {}
+\tvar http_port := int(policy.get("http_port", 0))
+\tvar ws_port := int(policy.get("ws_port", 0))
+\tif (http_port < 1024 or http_port > 65535 or ws_port < 1024
+\t\tor ws_port > 65535 or http_port == ws_port):
+\t\treturn {}
+\tvar status := fetch_status(http_port)
+\tif status.is_empty() or int(status.get("ws_port", 0)) != ws_port:
+\t\treturn {}
+\tstatus["_test_endpoint"] = {
+\t\t"http_port": http_port, "ws_port": ws_port,
+\t\t"project_path": ProjectSettings.globalize_path("res://"),
+\t}
+\treturn status
+
+
 static func _read_capability(port: int) -> Dictionary:
 \tvar directory := OS.get_environment("GODOT_AI_CAPABILITY_DIR").strip_edges()
 \tif OS.get_name() == "Windows":
@@ -1362,7 +1381,7 @@ func _try_write_status(plugin: EditorPlugin) -> bool:
 \t\tor str(lifecycle.get("actual_version", "")) != TARGET_VERSION
 \t):
 \t\treturn false
-\tvar payload := DriverSupport.fetch_status(HTTP_PORT)
+\tvar payload := DriverSupport.fetch_selected_status(plugin)
 \tif (
 \t\tpayload.get("name") != "godot-ai"
 \t\tor str(payload.get("server_version", "")) != TARGET_VERSION

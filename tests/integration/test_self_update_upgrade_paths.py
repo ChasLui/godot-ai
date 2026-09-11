@@ -18,6 +18,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -290,9 +291,9 @@ def _first_start_after_closed_install(
         allow_headless=True,
         timeout=240,
         environment=environment,
-        live_probe=lambda: _authenticated_tool_probe(
-            http_port,
-            capability_dir,
+        live_probe=lambda: _selected_endpoint_tool_probe(
+            project, CLEAN_MAJOR_STATUS_FILE, capability_dir,
+            legacy_ports=(http_port, ws_port), migrated=not fresh, expected_version=target_version,
             resource_path="res://_test_clean_major_probe.txt",
             content="clean major authenticated write\n",
         ),
@@ -302,7 +303,7 @@ def _first_start_after_closed_install(
 
     assert_no_update_parse_errors(log)
     (project / "_test_first_start.log").write_text(log, encoding="utf-8")
-    config_text = (isolated / "codex" / "config.toml").read_text(encoding="utf-8")
+    config_text = _read_client_toml(isolated / "codex" / "config.toml")
     if foreign_entry:
         _assert_ordered(
             log,
@@ -337,25 +338,69 @@ def _first_start_after_closed_install(
     return project, marker
 
 
+def _read_client_toml(path: Path) -> str:
+    # Text-mode newline conversion would hide a writer's lone trailing CR.
+    text = path.read_bytes().decode("utf-8")
+    tomllib.loads(text)
+    return text
+
+
+def _selected_endpoint_tool_probe(
+    project: Path, status_file: str, capability_dir: Path, *,
+    legacy_ports: tuple[int, int], migrated: bool, expected_version: str,
+    resource_path: str, content: str,
+) -> None:
+    receipt = json.loads((project / status_file).read_text(encoding="utf-8"))
+    endpoint = receipt["_test_endpoint"]
+    ports = (endpoint["http_port"], endpoint["ws_port"])
+    assert all(type(port) is int and 1024 <= port <= 65535 for port in ports), endpoint
+    assert ports[0] != ports[1], endpoint
+    assert Path(endpoint["project_path"]).resolve() == project.resolve(), endpoint
+    if migrated:
+        assert set(ports).isdisjoint(legacy_ports), (ports, legacy_ports)
+    else:
+        assert ports == legacy_ports, (ports, legacy_ports)
+    assert receipt["server_version"] == expected_version, receipt
+    assert receipt["ws_port"] == ports[1], receipt
+    _authenticated_tool_probe(
+        ports[0], capability_dir, expected_project=project,
+        expected_instance=receipt["instance_id"], resource_path=resource_path, content=content,
+    )
+
+
 def _authenticated_tool_probe(
     http_port: int,
     capability_dir: Path,
     *,
     resource_path: str = "res://_test_authenticated_tool_probe.txt",
     content: str = "signed self-update authenticated write\n",
+    expected_project: Path | None = None,
+    expected_instance: str | None = None,
 ) -> None:
     async def run() -> None:
         record = read_capabilities(http_port, capability_dir)
         assert record is not None
+        if expected_instance is not None:
+            assert record.instance_nonce == expected_instance, (
+                "probe must retain the driver's authenticated instance"
+            )
         transport = StreamableHttpTransport(
             f"http://127.0.0.1:{http_port}/mcp",
             headers={"Authorization": f"Bearer {record.http}"},
         )
         async with Client(transport, timeout=10, init_timeout=10) as client:
             deadline = asyncio.get_running_loop().time() + 90
+            routing = {}
             while True:
                 sessions = await client.call_tool("session_manage", {"op": "list", "params": {}})
-                if int(sessions.data.get("count", 0)) > 0:
+                if expected_project is not None:
+                    matches = [row for row in sessions.data.get("sessions", [])
+                               if Path(row["project_path"]).resolve() == expected_project.resolve()]
+                    assert len(matches) <= 1, "fixture project must have one editor session"
+                    if matches:
+                        routing = {"session_id": matches[0]["session_id"]}
+                        break
+                elif int(sessions.data.get("count", 0)) > 0:
                     break
                 if asyncio.get_running_loop().time() >= deadline:
                     raise AssertionError("editor session stayed unavailable")
@@ -363,7 +408,7 @@ def _authenticated_tool_probe(
                 # WebSocket reconnect and authenticated handshake are pending.
                 await asyncio.sleep(0.2)
             while True:
-                state = await client.call_tool("editor_state", {}, raise_on_error=False)
+                state = await client.call_tool("editor_state", routing, raise_on_error=False)
                 if not state.is_error:
                     break
                 if asyncio.get_running_loop().time() >= deadline:
@@ -372,6 +417,7 @@ def _authenticated_tool_probe(
             written = await client.call_tool(
                 "filesystem_manage",
                 {
+                    **routing,
                     "op": "write_text",
                     "params": {
                         "path": resource_path,
@@ -383,6 +429,7 @@ def _authenticated_tool_probe(
             reread = await client.call_tool(
                 "filesystem_manage",
                 {
+                    **routing,
                     "op": "read_text",
                     "params": {"path": resource_path},
                 },
@@ -482,7 +529,7 @@ def test_signed_update_restarts_into_matching_live_server(
     assert (
         "SELF_UPDATE_TEST | ordinary reload restored backend and persisted enablement" in prep_log
     )
-    assert f"godot-ai=={base_version}" in (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert f"godot-ai=={base_version}" in _read_client_toml(codex_home / "config.toml")
     remove_configure_client_driver(project)
 
     # An agent stays attached through the whole update, exactly as a user's
@@ -531,7 +578,7 @@ def test_signed_update_restarts_into_matching_live_server(
     print(f"replacement: {'needed' if replaced_line in restarted_log else 'not needed'}")
     print(f"blocks before the start: {blocks_before_start}")
     ## From 4.0.4 on the attached bridge follows the new server (same major);
-    ## an older bridge refuses it and the user is told to quit and relaunch.
+    ## an older bridge needs a new MCP connection using the updated configuration.
     base_tuple = tuple(int(part) for part in base_version.split(".")[:3])
     if base_tuple >= (4, 0, 4):
         expected_client_line = (
@@ -540,8 +587,8 @@ def test_signed_update_restarts_into_matching_live_server(
         )
     else:
         expected_client_line = (
-            "MCP | AI clients attached before the update "
-            f"must be quit and relaunched to use v{next_version}"
+            "MCP | Refresh the Godot AI MCP connection and reload its configuration once "
+            f"to use v{next_version}; relaunch the AI app if it cannot reload the configuration"
         )
     assert expected_client_line in log
 
@@ -588,7 +635,7 @@ def test_signed_update_restarts_into_matching_live_server(
     assert read_plugin_version(base_addon / "plugin.cfg") == next_version
     assert (base_addon / "utils" / "self_update_smoke_child.gd").is_file()
     assert (base_addon / "utils" / "self_update_smoke_child.gd.uid").is_file()
-    client_config = (codex_home / "config.toml").read_text(encoding="utf-8")
+    client_config = _read_client_toml(codex_home / "config.toml")
     assert f"godot-ai=={next_version}" in client_config
     assert f"godot-ai=={base_version}" not in client_config
     assert (project / "_test_authenticated_tool_probe.txt").read_text(encoding="utf-8") == (
@@ -751,7 +798,7 @@ func _process(_delta: float) -> void:
 \t\treturn
 \tif not DriverSupport.client_config_has_pin(TARGET_VERSION):
 \t\treturn
-\tvar status := DriverSupport.fetch_status(HTTP_PORT)
+\tvar status := DriverSupport.fetch_selected_status(plugin)
 \tif str(status.get("server_version", "")) != TARGET_VERSION:
 \t\treturn
 \tvar file := FileAccess.open(STATUS_PATH, FileAccess.WRITE)
@@ -774,9 +821,9 @@ func _process(_delta: float) -> void:
         allow_headless=True,
         timeout=360 if os.name == "nt" else 240,
         environment=environment,
-        live_probe=lambda: _authenticated_tool_probe(
-            http_port,
-            capability_dir,
+        live_probe=lambda: _selected_endpoint_tool_probe(
+            project, POST_UPDATE_STATUS_FILE, capability_dir,
+            legacy_ports=(http_port, ws_port), migrated=True, expected_version=target_version,
             resource_path="res://_test_v3_bridge_probe.txt",
             content="v3 bridge authenticated write\n",
         ),
@@ -820,7 +867,7 @@ func _process(_delta: float) -> void:
     assert not (live / "update_reload_runner.gd").exists()
     assert not (live / "migration_bridge.gd").exists()
     codex_home = smoke.fixture_environment_paths(project)["codex_home"]
-    config_text = (codex_home / "config.toml").read_text(encoding="utf-8")
+    config_text = _read_client_toml(codex_home / "config.toml")
     assert f"godot-ai=={target_version}" in config_text
     assert f"godot-ai=={from_version}" not in config_text
     marker, backup = smoke.verify_lean_update_state(project, target_version)

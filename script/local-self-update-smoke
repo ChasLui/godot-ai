@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import urllib.error
 import urllib.request
 import zipfile
@@ -175,6 +176,11 @@ def parse_args() -> argparse.Namespace:
         help=f"Fixture-only MCP websocket port (default: {DEFAULT_WS_PORT})",
     )
     parser.add_argument(
+        "--preserve-port-settings",
+        action="store_true",
+        help="Exercise the real port reader with fixture-namespaced EditorSettings",
+    )
+    parser.add_argument(
         "--no-launch",
         action="store_true",
         help="Prepare and print instructions without launching Godot",
@@ -233,6 +239,7 @@ def main() -> int:
             http_port=args.http_port,
             ws_port=args.ws_port,
             force=args.force,
+            preserve_port_settings=args.preserve_port_settings,
             base_zip=base_zip,
             restart_log=project_dir / ".godot-ai-self-update-smoke" / RESTARTED_EDITOR_LOG_NAME,
         )
@@ -434,6 +441,7 @@ def prepare_project(
     force: bool,
     base_zip: Path | None = None,
     isolate_client_migration: bool = True,
+    preserve_port_settings: bool = False,
     restart_log: Path | None = None,
 ) -> None:
     ensure_safe_project_dir(project_dir, force)
@@ -493,6 +501,7 @@ def prepare_project(
         server_command=server_selector,
         isolate_client_migration=isolate_client_migration,
         client_launch_command=client_launch_command,
+        preserve_port_settings=preserve_port_settings,
     )
     patch_release_signing_key(base_addon / "utils" / "update_manager.gd", public_key)
     if restart_log is not None:
@@ -511,6 +520,7 @@ def prepare_project(
         server_command=server_selector,
         isolate_client_migration=isolate_client_migration,
         client_launch_command=client_launch_command,
+        preserve_port_settings=preserve_port_settings,
     )
     patch_vnext_hot_reload_trigger(vnext_root / "mcp_dock.gd")
     patch_vnext_topology_change(vnext_root)
@@ -600,6 +610,7 @@ def patch_fixture_plugin(
     isolate_client_migration: bool = False,
     skip_client_prewarm: bool = True,
     client_launch_command: Path | None = None,
+    preserve_port_settings: bool = False,
 ) -> None:
     _require_v4_addon_shape(addon_dir, version)
     patch_plugin_cfg(addon_dir / "plugin.cfg", version)
@@ -608,6 +619,7 @@ def patch_fixture_plugin(
         addon_dir / "utils" / "settings.gd",
         http_port,
         ws_port,
+        preserve_port_settings=preserve_port_settings,
     )
     patch_server_command(addon_dir / "client_configurator.gd", server_command)
     patch_expected_server_version(addon_dir / "plugin.gd", server_version)
@@ -702,7 +714,12 @@ def patch_plugin_cfg(path: Path, version: str) -> None:
 
 
 def patch_port_isolation(
-    configurator_path: Path, settings_path: Path, http_port: int, ws_port: int
+    configurator_path: Path,
+    settings_path: Path,
+    http_port: int,
+    ws_port: int,
+    *,
+    preserve_port_settings: bool = False,
 ) -> None:
     # SETTING_HTTP_PORT and SETTING_EXCLUDED_DOMAINS live in utils/settings.gd.
     stext = settings_path.read_text(encoding="utf-8")
@@ -746,14 +763,20 @@ def patch_port_isolation(
         'const SETTING_WS_PORT := "godot_ai_self_update_smoke/ws_port"',
         "SETTING_WS_PORT",
     )
-    text = replace_function(
-        text,
-        "static func _read_port_setting(key: String, default_port: int) -> int:",
-        """static func _read_port_setting(_key: String, default_port: int) -> int:
+    # Released base trees may predate the v4 endpoint override setting.
+    text = text.replace(
+        '"godot_ai/v4_endpoint_ports"',
+        '"godot_ai_self_update_smoke/v4_endpoint_ports"',
+    )
+    if not preserve_port_settings:
+        text = replace_function(
+            text,
+            "static func _read_port_setting(key: String, default_port: int) -> int:",
+            """static func _read_port_setting(_key: String, default_port: int) -> int:
 \t## The smoke fixture must not adopt or kill another editor's server through
 \t## global EditorSettings. Keep its ports deterministic and fixture-local.
 \treturn default_port""",
-    )
+        )
     configurator_path.write_text(text, encoding="utf-8")
 
 
@@ -1348,6 +1371,7 @@ def run_v3_crossing(args: argparse.Namespace, project_dir: Path) -> int:
         http_port=args.http_port,
         ws_port=args.ws_port,
         restart_log=marker_dir / RESTARTED_EDITOR_LOG_NAME,
+        preserve_port_settings=args.preserve_port_settings,
     )
     write_baseline(project_dir, baseline)
     print_v3_instructions(project_dir, args.godot, from_version, target_version)
@@ -1371,6 +1395,7 @@ def prepare_v3_crossing_project(
     http_port: int,
     ws_port: int,
     restart_log: Path | None = None,
+    preserve_port_settings: bool = False,
 ) -> dict[str, Path]:
     """Install exact final-v3 that will cross into this checkout's v4 via the capsule.
 
@@ -1409,6 +1434,7 @@ def prepare_v3_crossing_project(
         server_command=server_command,
         isolate_client_migration=True,
         client_launch_command=client_command,
+        preserve_port_settings=preserve_port_settings,
     )
     bundle = work / "release"
     bundle.mkdir()
@@ -1640,6 +1666,9 @@ def launch_and_verify_v3_crossing(
     godot_path = shutil.which(godot_bin) if os.sep not in godot_bin else godot_bin
     if godot_path is None or not Path(godot_path).exists():
         raise HarnessError(f"Godot executable not found: {godot_bin}")
+    original_ports = fixture_client_ports(project_dir, from_version)
+    if original_ports[0] != http_port:
+        raise HarnessError("Initial fixture client does not name the requested HTTP port")
     started = time.time()
     marker_dir = project_dir / ".godot-ai-self-update-smoke"
     child_environment = os.environ.copy()
@@ -1692,13 +1721,23 @@ def launch_and_verify_v3_crossing(
         return 1
     restarted_lines = wait_for_restarted_editor(marker_dir / RESTARTED_EDITOR_LOG_NAME)
     lines.extend(restarted_lines)
-    post_update_status = wait_for_live_status(
-        http_port,
-        target_version,
-        capability_dir=fixture_environment_paths(project_dir)["capability_dir"],
-        timeout=POST_UPDATE_STATUS_TIMEOUT_SECONDS,
-        poll=POST_UPDATE_STATUS_POLL_SECONDS,
-    )
+    post_update_status = None
+    try:
+        selected_ports = fixture_client_ports(project_dir, target_version)
+        if set(selected_ports) & set(original_ports):
+            raise HarnessError("Migrated fixture client still selects an original v3 port")
+        post_update_status = wait_for_live_status(
+            selected_ports[0],
+            target_version,
+            capability_dir=fixture_environment_paths(project_dir)["capability_dir"],
+            timeout=POST_UPDATE_STATUS_TIMEOUT_SECONDS,
+            poll=POST_UPDATE_STATUS_POLL_SECONDS,
+        )
+        if post_update_status and post_update_status.get("ws_port") != selected_ports[1]:
+            raise HarnessError("Authenticated backend WS port differs from migrated client")
+    except HarnessError as exc:
+        print(f"FAIL: {exc}")
+        post_update_status = None
     ok = verify_v3_crossing(
         project_dir,
         from_version,
@@ -1711,6 +1750,36 @@ def launch_and_verify_v3_crossing(
     )
     print("The restarted editor stays open for inspection; close it when you are done.")
     return 0 if ok else 1
+
+
+def fixture_client_ports(project_dir: Path, expected_version: str) -> tuple[int, int]:
+    """Read the actual isolated client entry without executing its fixture command."""
+    path = fixture_environment_paths(project_dir)["codex_home"] / "config.toml"
+    try:
+        with path.open("rb") as source:
+            raw = source.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("oversized fixture config")
+        entry = tomllib.loads(raw.decode("utf-8"))["mcp_servers"]["godot-ai"]
+        args = entry["args"]
+        if not isinstance(args, list) or len(args) != 8:
+            raise ValueError("unexpected fixture client argument shape")
+        if args[:5] != ["--from", f"godot-ai=={expected_version}", "godot-ai", "attach", "--port"]:
+            raise ValueError("fixture client has wrong version or command")
+        if args[6] != "--ws-port":
+            raise ValueError("fixture client has no WS selector")
+        values = (args[5], args[7])
+        if any(
+            not isinstance(value, str) or re.fullmatch(r"[0-9]{1,5}", value) is None
+            for value in values
+        ):
+            raise ValueError("invalid fixture port")
+        ports = (int(values[0]), int(values[1]))
+        if any(not 1024 <= port <= 65535 for port in ports) or ports[0] == ports[1]:
+            raise ValueError("invalid fixture port pair")
+        return ports
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise HarnessError(f"Cannot read migrated fixture client ports: {exc}") from exc
 
 
 def verify_v3_crossing(
