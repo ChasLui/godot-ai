@@ -45,6 +45,12 @@ DEFAULT_HTTP_PORT = 8000
 DEFAULT_WS_PORT = 9500
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 30.0
 DEFAULT_LOCK_TIMEOUT_MARGIN_SECONDS = 15.0
+## A backend this bridge already served that vanishes with its port free is
+## usually being replaced by an editor (an update restart, the dock's Restart
+## Server): the replacement takes the port within a retry of the kill. Wait
+## this long for it to answer before spawning a backend of our own into what
+## would otherwise be a race the editor's server loses on a fast machine.
+REPLACEMENT_GRACE_SECONDS = 5.0
 DEFAULT_PROBE_TIMEOUT_SECONDS = 1.0
 MAX_STATUS_RESPONSE_BYTES = 64 * 1024
 RUNTIME_DIR_ENV = "GODOT_AI_RUNTIME_DIR"
@@ -182,8 +188,8 @@ def user_runtime_dir() -> Path:
             f"Choose a private directory owned by your user with {RUNTIME_DIR_ENV}, "
             "or correct the directory ownership and permissions."
         )
-        ## The destructive repair is only ever offered for our own default
-        ## location; a GODOT_AI_RUNTIME_DIR override is the user's directory.
+        ## Explain Windows permissions for the default location; an explicit
+        ## runtime override retains the directory-selection guidance above.
         if os.name == "nt" and isinstance(exc, PermissionError) and not override:
             hint = windows_repair_hint(path)
         raise AttachStartupError(
@@ -538,6 +544,10 @@ def _backend_spawn_env(capabilities: LaunchCapabilities) -> dict[str, str]:
     for inherited_process_key in (
         PLUGIN_SPAWNED_ENV,
         "GODOT_AI_OWNER_PID",
+        # A plugin launch's port-wait and launch name are that launch's: an
+        # attach-owned backend fails fast on a held port and reports no phase.
+        "GODOT_AI_WAIT_FOR_PORT_MS",
+        "GODOT_AI_LAUNCH_ID",
         HTTP_CAPABILITY_ENV,
         WS_CAPABILITY_ENV,
         # A bridge launched from a reload worker must not make its independent
@@ -573,6 +583,7 @@ class BackendEnsurer:
         lock_timeout_margin_seconds: float = DEFAULT_LOCK_TIMEOUT_MARGIN_SECONDS,
         poll_seconds: float = 0.1,
         required_version: str = __version__,
+        replacement_grace_seconds: float = REPLACEMENT_GRACE_SECONDS,
     ) -> None:
         self.port = port
         self.ws_port = ws_port
@@ -589,6 +600,8 @@ class BackendEnsurer:
         )
         self._poll_seconds = poll_seconds
         self._required_version = required_version
+        self._replacement_grace_seconds = replacement_grace_seconds
+        self._served_backend = False
 
     @property
     def base_url(self) -> str:
@@ -620,8 +633,12 @@ class BackendEnsurer:
         )
         async with lock:
             status = await self._adopt_existing()
+            if status is None and self._served_backend:
+                status = await self._await_replacement()
             if status is not None:
-                return self._validate(status)
+                validated = self._validate(status)
+                self._served_backend = True
+                return validated
             if not self._port_check(self.ws_port):
                 raise _foreign_occupant(self.ws_port, "WebSocket port is already occupied")
 
@@ -636,7 +653,9 @@ class BackendEnsurer:
             while time.monotonic() < deadline:
                 status = await self._probe(self.port, capabilities.http)
                 if status is not None:
-                    return self._validate(status)
+                    validated = self._validate(status)
+                    self._served_backend = True
+                    return validated
                 exit_code = spawned.process.poll()
                 if exit_code is not None:
                     raise AttachStartupError(
@@ -656,6 +675,21 @@ class BackendEnsurer:
                 retryable=True,
                 data={"log_path": str(spawned.log_path)},
             )
+
+    async def _await_replacement(self) -> BackendStatus | None:
+        """Give an editor replacing our lost backend the port before we spawn.
+
+        Called only after this bridge served a backend that is now gone with
+        the port free. ``None`` after the grace means nobody took the port:
+        the caller spawns as it would have.
+        """
+        deadline = time.monotonic() + self._replacement_grace_seconds
+        while time.monotonic() < deadline:
+            await asyncio.sleep(self._poll_seconds)
+            status = await self._adopt_existing()
+            if status is not None:
+                return status
+        return None
 
     async def _adopt_existing(self) -> BackendStatus | None:
         """Retry the status probe while the HTTP port is bound.

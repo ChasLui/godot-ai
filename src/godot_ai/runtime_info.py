@@ -79,6 +79,36 @@ def report_startup_failure(exc: BaseException, *, hint: str = "") -> Path | None
     return path
 
 
+## The port preflight has entered its bind loop: from here the port passes to
+## this process within one retry of freeing. The plugin's replacement kills
+## the occupant only after reading this phase, so the port is never free long
+## enough for an attach bridge to spawn a backend of its own into the gap.
+STARTUP_PHASE_WAITING_FOR_PORT = "waiting_for_port"
+
+
+def report_startup_phase(phase: str, **fields: object) -> Path | None:
+    """Record a startup phase in the report without claiming a failure.
+
+    A failure reported afterwards overwrites the phase, so the report the
+    plugin reads on a failed launch is still the failure. Best effort, like
+    :func:`report_startup_failure`: never raises.
+    """
+    path = _STARTUP_REPORT_PATH
+    if path is None or _STARTUP_REPORT_WRITTEN:
+        return None
+    payload: dict[str, object] = {"pid": os.getpid(), "phase": phase}
+    payload.update(fields)
+    ## Whole or absent: the plugin polls this file while we write it.
+    staging = path.with_name(path.name + ".phase")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staging.write_text(json.dumps(payload, ensure_ascii=True) + "\n", encoding="utf-8")
+        os.replace(staging, path)
+    except OSError:
+        return None
+    return path
+
+
 def install_pid_file(path: str | os.PathLike[str] | None) -> Path | None:
     """Write `os.getpid()` to `path` and register an atexit unlink.
 

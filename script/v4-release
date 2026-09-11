@@ -68,6 +68,7 @@ MIGRATION_PAYLOAD_PREFIX = f"{PLUGIN_PREFIX}migration_payload/"
 MIGRATION_INSTALLER_SCRIPTS = (
     "utils/release_verifier.gd",
     "utils/update_installer.gd",
+    "utils/update_activation_runner.gd",
     "utils/port_resolver.gd",
 )
 MIGRATION_INSTALLER_MAX_FILES = 32

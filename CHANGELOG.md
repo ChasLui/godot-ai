@@ -5,10 +5,79 @@ this file at the release's exact source commit, and its "What's Changed"
 section lists every merged pull request; this file keeps the part worth
 reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
-## Unreleased
+## 4.1.0 (2026-09-11)
+
+Plugin updates now activate inside the running editor, preserving open scenes,
+unsaved changes, selection, and undo history. Updating from published 4.0.4
+still restarts the editor once through its existing updater; later updates use
+the new in-editor path. Published 3.2.5 can migrate through the new update
+capsule without restarting the editor. Older AI clients may still need one
+relaunch after migration.
+[Compare v4.0.4...v4.1.0](https://github.com/hi-godot/godot-ai/compare/v4.0.4...v4.1.0).
 
 ### Fixed
 
+- Fixed a native editor crash when an import runs while the Update confirmation
+  is open. Godot's shared progress dialog survives plugin replacement and can
+  be reused by the next filesystem scan.
+- Updates wait for filesystem scans before replacing and enabling scripts,
+  retain scripts needed by existing undo callbacks, and explain why an unsafe
+  activation was refused.
+- Startup and update recovery stay in a pending state until the server is
+  ready. Genuine failures retain their error state and diagnostics.
+- Windows process-inspection failures no longer masquerade as an exited
+  process. Server ownership checks retain the evidence needed for recovery.
+- Migration chooses an independent HTTP/WebSocket port pair. The dock's port
+  picker updates the effective pair, including migrated settings, and also
+  supports incompatible servers that cannot be reclaimed.
+- Backup scans skip linked child directories, and Linux startup explains when
+  required listener tools are missing.
+
+### Known issue
+
+- **Configure all** can report a client-configuration lock error when requests
+  overlap. Configure clients individually, waiting for each operation to finish,
+  and retry an affected client after the active operation completes. Tracked in
+  [#1047](https://github.com/hi-godot/godot-ai/issues/1047).
+
+## 4.0.4 (2026-09-09)
+
+Updating with AI clients attached no longer means quitting and relaunching
+them: from this version a client's `godot-ai attach` bridge keeps serving a
+server of the same major version, and the restarted editor replaces the
+server an old bridge left on the port by itself. Clients attached through
+4.0.3 or earlier still need one last relaunch after this update. Also the
+dock names each activation phase, a held WebSocket port is diagnosed before
+launch, `physics_shape_generate` lands, and release qualification updates
+with a real attached bridge.
+[Compare v4.0.3...v4.0.4](https://github.com/hi-godot/godot-ai/compare/v4.0.3...v4.0.4).
+
+### Added
+
+- `resource_manage(op="physics_shape_generate")`: bulk-generate a
+  `StaticBody3D` or `Area3D` sibling with a fitted `CollisionShape3D` (box,
+  sphere, capsule or cylinder) for every `MeshInstance3D` path, as one undo
+  action. Every path is validated before anything is written, and a deferred
+  request re-validates each mesh again when its body is added, so a scene
+  edited meanwhile fails the request instead of leaving a partial batch.
+  Contributed by @michaltomczykowski in
+  [#892](https://github.com/hi-godot/godot-ai/pull/892).
+
+### Fixed
+
+- The restarted editor's replacement of the server an attached bridge left on
+  the port no longer loses the port to that bridge. The replacement server
+  reports the moment it reaches its port wait and the occupant is killed only
+  then, so a launch that spends seconds in uvx installing the new version no
+  longer leaves the port free for the bridge to spawn a backend of the old
+  version into (the 4.0.4 qualification's Ubuntu rows: three replacement
+  attempts, each `HTTP port 8000 is already in use`). A bridge whose backend
+  vanishes with the port free now also waits five seconds for a replacement
+  to answer before spawning its own.
+- The dock no longer looks frozen on "Downloading…" after the download has
+  finished: activation now names each phase ("Verifying signed update…",
+  "Staging the verified tree…", "Waiting for client workers…", "Activating
+  verified update…") and lets the dock repaint before the phase's work runs.
 - A server that refused to start now says why in the dock. The launch-failure
   message (`The launched process identity could not be captured…`) appends the
   server's own startup report, which two 4.0.3 reports had on disk unread:
@@ -26,7 +95,7 @@ reading. Release engineering: [docs/releasing.md](docs/releasing.md).
   of 800 ms so a backend still settling on the port is not reported as
   "held by another process" with nothing replacing it.
 - The post-update banner and log line say "AI clients keep working" when the
-  clients were attached through 4.1.0 or newer (their bridges follow the new
+  clients were attached through 4.0.4 or newer (their bridges follow the new
   server), and keep telling the user to quit and relaunch only for bridges
   that predate it.
 

@@ -300,7 +300,7 @@ header works only until the next server start.
      "args": [
        "-T", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR",
        "you@host.docker.internal",
-       "uvx --isolated --no-config --no-env-file --no-sources --no-build --index-strategy first-index --keyring-provider disabled --index https://pypi.org/simple --default-index https://pypi.org/simple --find-links https://pypi.org/simple/godot-ai/ --link-mode copy --from godot-ai==4.0.3 godot-ai attach --port 8000 --ws-port 9500"
+       "uvx --isolated --no-config --no-env-file --no-sources --no-build --index-strategy first-index --keyring-provider disabled --index https://pypi.org/simple --default-index https://pypi.org/simple --find-links https://pypi.org/simple/godot-ai/ --link-mode copy --from godot-ai==4.0.4 godot-ai attach --port 8000 --ws-port 9500"
      ]
    }
    ```
@@ -325,7 +325,7 @@ header works only until the next server start.
 
 The bridge launched this way authenticates itself on every start, so a server
 restart needs no manual step, and neither does a Godot AI **update** within
-the same major version: a bridge at 4.1.0 or newer keeps serving the updated
+the same major version: a bridge at 4.0.4 or newer keeps serving the updated
 server. A major-version update does, and so does the one-time move off a
 bridge at 4.0.3 or earlier: the dock repins owned entries in config files on
 the editor machine but cannot see a file on another machine, so refresh the
