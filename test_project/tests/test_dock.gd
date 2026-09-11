@@ -510,6 +510,26 @@ class _RepinRecordingOwner extends ClientJobOwnerScript:
 		}
 
 
+func test_active_startup_stays_amber_with_blocked_transport_after_grace() -> void:
+	_dock._build_ui()
+	_dock._startup_grace_until_msec = 0
+	_dock._post_update_server_pending = false
+	var manager := McpServerLifecycleManager.new()
+	manager.configure({"automatic_effects": false})
+	manager.start_server()
+	_dock.present_lifecycle_snapshot(manager.get_status_dict())
+	_dock.present_transport_snapshot({"connected": false, "status": {"phase": "blocked"}})
+	_dock._update_status()
+	assert_eq(_dock._status_label.text, "Starting server…")
+	assert_eq(_dock._status_icon.color, McpDockScript.COLOR_AMBER)
+	assert_true(manager.is_connection_blocked(), "startup presentation grants no transport authority")
+	manager._block("launch_gone", "The server exited")
+	_dock.present_lifecycle_snapshot(manager.get_status_dict())
+	_dock._update_status()
+	assert_true(_dock._status_label.text.begins_with("Server exited"), _dock._status_label.text)
+	assert_eq(_dock._status_icon.color, Color.RED)
+
+
 func test_post_update_window_reads_as_finishing_not_blocked() -> void:
 	_dock._build_ui()
 	## Restarted editor after an update: lifecycle dormant, transport blocked.
@@ -737,17 +757,12 @@ func test_post_update_retry_button_emits_barrier_action_instead_of_a_second_upda
 	dock.free()
 
 
-func test_update_confirmation_names_editor_restart_and_client_compatibility() -> void:
+func test_update_confirmation_preserves_editor_and_names_client_compatibility() -> void:
 	var text := McpDockScript.update_confirm_text("4.1.0", "4.0.4")
-	assert_true(text.contains("save your project"), text)
-	assert_true(text.contains("restart the Godot editor"), text)
-	assert_true(text.contains("Godot AI v4.1.0"), text)
-	assert_true(text.contains("AI clients already using v4.0.4 can reconnect without restarting."), text)
-	assert_true(text.contains("Relaunch clients still using an older version."), text)
+	assert_eq(text, "Update to Godot AI v4.1.0? Unsaved changes are kept.\n\nRestart AI clients older than v4.0.4.")
 	for versions in [["4.0.3", "4.1.0"], ["4.1.0", "5.0.0"], ["", "4.1.0"], ["4.0.4", ""]]:
 		text = McpDockScript.update_confirm_text(versions[1], versions[0])
-		assert_true(text.contains("Quit and relaunch connected AI clients"), text)
-		assert_false(text.contains("without restarting"), text)
+		assert_true(text.ends_with("Restart your AI client after updating."), text)
 	assert_true(McpDockScript.update_confirm_text("", "4.0.4").contains("the new Godot AI"))
 
 
@@ -756,12 +771,65 @@ func test_update_dialog_defers_until_confirmation() -> void:
 	dock._build_ui()
 	var update_calls := [0]
 	dock.update_requested.connect(func() -> void: update_calls[0] += 1)
-	assert_eq(dock._update_confirm.get_ok_button().text, "Update and restart")
+	assert_eq(dock._update_confirm.get_ok_button().text, "Update plugin")
 	assert_eq(dock._update_confirm.get_cancel_button().text, "Later")
 	dock._update_confirm.canceled.emit()
 	assert_eq(update_calls[0], 0, "Later must leave the update unrequested")
 	dock._update_confirm.confirmed.emit()
 	assert_eq(update_calls[0], 1, "confirming is what requests the update")
+	dock.free()
+
+
+func test_teardown_preserves_native_progress_dialog_from_owned_windows() -> void:
+	var root := EditorInterface.get_base_control().get_tree().root
+	var dialogs := root.find_children("*", "ProgressDialog", true, false)
+	assert_eq(dialogs.size(), 1, "the live editor must have one shared native progress dialog")
+	if dialogs.size() != 1:
+		return
+	var progress: Node = dialogs[0]
+	assert_true(progress.is_class("ProgressDialog"), "the fixture must borrow the native editor object")
+	if bool(progress.call("is_visible")):
+		skip("the editor is currently using its shared progress dialog")
+		return
+	var progress_id := progress.get_instance_id()
+	for host_property in ["_update_confirm", "_tools_close_confirm"]:
+		var dock := McpDockScript.new()
+		dock.hide()
+		root.add_child(dock)
+		dock.set_process(false)
+		var host: Window = dock.get(host_property)
+		var owned_ids := [
+			dock._update_confirm.get_instance_id(),
+			dock._tools_close_confirm.get_instance_id(),
+			dock._clients_window.get_instance_id(),
+		]
+		progress.reparent(host)
+		var adopted := progress.get_parent() == host
+		dock.release_editor_progress_dialog()
+		var released := progress.get_parent() == root
+		dock.release_editor_progress_dialog()
+		var repeated_release := progress.get_parent() == root
+		## Rescue independently of the implementation before freeing the fixture,
+		## so a failed assertion cannot destroy the editor's shared native object.
+		if progress.get_parent() != root:
+			progress.reparent(root)
+		dock.free()
+		assert_true(adopted, "%s must reproduce the stranded parent" % host_property)
+		assert_true(released, "%s must release progress before dock destruction" % host_property)
+		assert_true(repeated_release, "releasing twice must be harmless")
+		assert_true(is_instance_id_valid(progress_id), "the same native object must survive teardown")
+		assert_eq(progress.get_instance_id(), progress_id)
+		assert_eq(progress.get_parent(), root)
+		for owned_id in owned_ids:
+			assert_false(is_instance_id_valid(owned_id), "plugin-owned windows must still be destroyed")
+
+
+func test_release_editor_progress_dialog_outside_tree_is_harmless() -> void:
+	var dock := McpDockScript.new()
+	dock._build_ui()
+	var confirmation := dock._update_confirm
+	dock.release_editor_progress_dialog()
+	assert_eq(confirmation.get_parent(), dock, "off-tree cleanup must leave owned UI intact")
 	dock.free()
 
 

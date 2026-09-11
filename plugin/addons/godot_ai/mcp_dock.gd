@@ -307,6 +307,15 @@ func _notification(what: int) -> void:
 			_refresh_setup_status.call_deferred()
 
 
+## Godot can leave its shared progress dialog under one of our modal windows.
+## Return it before removing the dock: freeing it leaves the editor's pointer dangling.
+func release_editor_progress_dialog() -> void:
+	if not is_inside_tree():
+		return
+	for dialog in find_children("*", "ProgressDialog", true, false):
+		dialog.reparent(get_tree().root)
+
+
 func _should_refresh_client_statuses_on_focus_in() -> bool:
 	## Focus-in is part of Godot/editor window activation. Keep automatic refresh,
 	## but only through the async/cooldown-protected path; never run a blocking
@@ -815,6 +824,9 @@ func _update_status() -> void:
 	elif connected:
 		status_text = _connected_status_text()
 		status_color = Color.GREEN
+	elif bool(server_status.get("handoff_retry_pending", false)):
+		status_text = "Recovering after update…"
+		status_color = COLOR_AMBER
 	elif state == ServerStateScript.CRASHED:
 		var exit_ms: int = server_status.get("exit_ms", 0)
 		status_text = "Server exited after %.1fs" % (exit_ms / 1000.0)
@@ -840,6 +852,9 @@ func _update_status() -> void:
 		## Every terminal spawn failure matched above; what is left is the
 		## post-update window where the server is being brought back.
 		status_text = "Finishing update — starting server…"
+		status_color = COLOR_AMBER
+	elif state == ServerStateScript.SPAWNING:
+		status_text = "Starting server…"
 		status_color = COLOR_AMBER
 	elif not transport_status.is_empty():
 		var transport_phase := str(transport_status.get("phase", ""))
@@ -2102,7 +2117,7 @@ func _build_tools_tab(tabs: TabContainer) -> void:
 
 	_update_confirm = ConfirmationDialog.new()
 	_update_confirm.title = "Update Godot AI?"
-	_update_confirm.ok_button_text = "Update and restart"
+	_update_confirm.ok_button_text = "Update plugin"
 	_update_confirm.cancel_button_text = "Later"
 	_update_confirm.confirmed.connect(_on_update_confirmed)
 	add_child(_update_confirm)
@@ -2744,10 +2759,8 @@ func _on_update_pressed() -> void:
 	if not _post_update_action.is_empty():
 		post_update_action_requested.emit(_post_update_action)
 		return
-	## The update saves every open scene, swaps the add-on tree and relaunches
-	## the editor (docs/self-update.md, step 8). Ask before doing that to a
-	## user's session. A dock that is not in a scene tree has no dialog to
-	## show and proceeds directly.
+	## Updating briefly disconnects AI tools while the add-on is replaced.
+	## A dock outside the scene tree has no dialog and proceeds directly.
 	if _update_confirm != null and is_inside_tree():
 		_update_confirm.dialog_text = update_confirm_text(
 			_update_candidate_version, ClientConfigurator.get_plugin_version()
@@ -2763,14 +2776,12 @@ func _on_update_confirmed() -> void:
 
 static func update_confirm_text(version: String, current_version: String) -> String:
 	var target := "Godot AI v%s" % version if not version.is_empty() else "the new Godot AI"
-	var clients := (
-		"AI clients already using v%s can reconnect without restarting. Relaunch clients still using an older version." % current_version
-		if McpServerVersionCheck.attached_bridges_follow(current_version, version)
-		else "Quit and relaunch connected AI clients after the update."
-	)
-	return (
-		"This will save your project and restart the Godot editor to install %s.\n\n%s"
-	) % [target, clients]
+	var text := "Update to %s? Unsaved changes are kept." % target
+	if McpServerVersionCheck.attached_bridges_follow(current_version, version):
+		text += "\n\nRestart AI clients older than v4.0.4."
+	else:
+		text += "\n\nRestart your AI client after updating."
+	return text
 
 
 func present_update_check(result: Dictionary) -> void:

@@ -15,6 +15,14 @@ class _StaleCapabilityLifecycle extends Lifecycle:
 		return {"http": HTTP, "websocket": WS, "instance_nonce": INSTANCE}
 
 
+class _PortWaitWarnings extends Logger:
+	var waits: Array[String] = []
+
+	func _log_error(_function: String, _file: String, _line: int, code: String, rationale: String, _editor_notify: bool, error_type: int, _script_backtraces: Array) -> void:
+		if error_type == ERROR_TYPE_WARNING and (code + rationale).contains("still in use after"):
+			waits.append(code + rationale)
+
+
 func suite_name() -> String:
 	return "server_lifecycle"
 
@@ -570,12 +578,28 @@ func test_stop_of_a_gone_process_succeeds_even_while_a_foreign_listener_remains(
 	if holder.listen(port, "127.0.0.1") != OK:
 		skip("could not seize port for stop postcondition")
 		return
-	var gone_grant = Authority.OwnedProcessGrant.new(2147483000, "gone", 1)
+	var gone_pid := OS.create_process(OS.get_executable_path(), ["--headless", "--version"])
+	assert_true(gone_pid > 1, "create our short-lived child")
+	var deadline := Time.get_ticks_msec() + 5000
+	while gone_pid > 1 and OS.is_process_running(gone_pid) and Time.get_ticks_msec() < deadline:
+		await (Engine.get_main_loop() as SceneTree).create_timer(0.05).timeout
+	assert_false(OS.is_process_running(gone_pid), "our child must have exited before stop")
+	var gone_grant = Authority.OwnedProcessGrant.new(gone_pid, "gone", 1)
+	var warnings := _PortWaitWarnings.new()
+	OS.add_logger(warnings)
 	var result := Lifecycle.new()._effect_stop({
 		"grant": gone_grant,
 		"http_port": port,
 		"launch": {},
 	})
+	OS.remove_logger(warnings)
+	assert_eq(warnings.waits, [], "do not wait for an unrelated listener to exit")
+	assert_true(holder.is_listening(), "the unrelated listener survives")
+	var client := StreamPeerTCP.new()
+	assert_eq(client.connect_to_host("127.0.0.1", port), OK)
+	client.poll()
+	assert_true(client.get_status() in [StreamPeerTCP.STATUS_CONNECTING, StreamPeerTCP.STATUS_CONNECTED])
+	client.disconnect_from_host()
 	holder.stop()
 	assert_true(bool(result.get("ok", false)), str(result))
 	assert_false(bool(result.get("already_gone", true)), "the port was not free, so nothing is 'already gone'")

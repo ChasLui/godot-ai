@@ -497,6 +497,13 @@ func test_process_snapshot_pair_accepts_escaped_members_near_the_inner_limit() -
 	assert_eq(McpPortResolver.process_commandline(4242, pair[1]), command)
 
 
+func test_listener_tool_preflight_is_inert_outside_linux() -> void:
+	if OS.get_name() == "Linux":
+		skip("Isolated Linux PATH cases run in the integration fixture")
+		return
+	assert_eq(McpPortResolver.listener_tools_problem(), "")
+
+
 func test_process_capture_distinguishes_absence_from_unavailable_evidence() -> void:
 	var absent := McpPortResolver.parse_process_snapshot("[]", 4242)
 	assert_eq(absent, {})

@@ -135,6 +135,7 @@ var _last_logged_block := ""
 ## that is bound but not yet answering status reads as merely occupied.
 const POST_UPDATE_REPROBE_LIMIT := 10
 var _post_update_reprobes_left := POST_UPDATE_REPROBE_LIMIT
+var _post_update_retry_episode := 0
 ## A pre-v4 server left on the port by a still-running v3 attach bridge
 ## outlives the fast budget above: its lease lasts 30 s after that client
 ## quits and its idle backstop another 120 s. Poll slowly across that
@@ -713,6 +714,12 @@ func _lifecycle_snapshot_for_dock() -> Dictionary:
 		_normal_start_released and bool(snapshot.get("can_recover_incompatible", false))
 	)
 	snapshot["normal_start_released"] = _normal_start_released
+	if _post_update_retry_episode > 0 and int(snapshot.get("episode_id", 0)) == _post_update_retry_episode:
+		var episode: Dictionary = _lifecycle.episode_snapshot()
+		if str(episode.get("state", "")) == "BLOCKED" and str(episode.get("reason", "")) == "launch_gone" and str(episode.get("proof_pending_reason", "")) == "capability_pair":
+			## Only the presentation changes; transport remains blocked until proof.
+			snapshot["state"] = ServerStateScript.SPAWNING
+			snapshot["handoff_retry_pending"] = true
 	return snapshot
 
 
@@ -930,9 +937,10 @@ func _finish_post_update() -> void:
 	var recorded := UpdateInstaller.record_clients_migrated()
 	if recorded != OK:
 		push_warning("MCP | could not record client migration in the update marker: %s" % error_string(recorded))
-	## Backups are named by the version they hold: keep the one this update
-	## just retained (the previous version) and drop older ones.
-	UpdateInstaller.prune_backups(str(_post_update_outcome.get("from_version", "")))
+	## In-editor updates retain old script graphs for undo. Keep their backing
+	## files until a fresh editor process can safely prune older generations.
+	if not get_tree().root.has_meta("godot_ai_retained_update_scripts"):
+		UpdateInstaller.prune_backups(str(_post_update_outcome.get("from_version", "")))
 	_post_update_replaced_version = str(_post_update_outcome.get("from_version", ""))
 	_post_update_reprobes_left = POST_UPDATE_REPROBE_LIMIT
 	_post_update_stale_reprobes_left = POST_UPDATE_STALE_REPROBE_LIMIT
@@ -1109,6 +1117,7 @@ func _exit_tree() -> void:
 		_dispatcher.release_after_teardown()
 
 	if _dock:
+		_dock.release_editor_progress_dialog()
 		remove_control_from_docks(_dock)
 		_dock.queue_free()
 		_dock = null
@@ -1338,11 +1347,13 @@ static func _supports_godot_version(version_info: Dictionary) -> bool:
 
 
 func _on_lifecycle_snapshot_changed(snapshot: Dictionary) -> void:
+	if int(snapshot.get("episode_id", 0)) != _post_update_retry_episode or str(snapshot.get("episode_state", "")) != "BLOCKED":
+		_post_update_retry_episode = 0
 	if _connection != null and bool(snapshot.get("connection_blocked", true)):
 		_connection.connect_blocked = true
 		_connection.connect_block_reason = str(snapshot.get("message", ""))
-	_log_lifecycle_block(snapshot)
 	_replace_server_left_by_update(snapshot)
+	_log_lifecycle_block(snapshot)
 	if _client_jobs != null:
 		_client_jobs.set_client_health_blocked(
 			ServerStateScript.blocks_client_health(
@@ -1362,7 +1373,8 @@ func _log_lifecycle_block(snapshot: Dictionary) -> void:
 	if message.is_empty() or message == _last_logged_block:
 		return
 	_last_logged_block = message
-	print("MCP | server start blocked: %s" % message)
+	var retry_pending := bool(_lifecycle_snapshot_for_dock().get("handoff_retry_pending", false))
+	print("MCP | %s: %s" % ["server handoff retry pending" if retry_pending else "server start blocked", message])
 
 
 ## Once, right after an update: a godot-ai server at the version we just
@@ -1384,6 +1396,9 @@ func _replace_server_left_by_update(snapshot: Dictionary) -> void:
 		## the remaining path.
 		if str(snapshot.get("episode_state", "")) != "BLOCKED":
 			return
+		var episode_id := int(snapshot.get("episode_id", 0))
+		if episode_id <= 0 or episode_id == _post_update_retry_episode:
+			return
 		if str(snapshot.get("blocked_hint", "")) == ServerLifecycleManager.STALE_PRE_V4_HINT:
 			if _post_update_stale_reprobes_left <= 0:
 				return
@@ -1393,13 +1408,15 @@ func _replace_server_left_by_update(snapshot: Dictionary) -> void:
 					% int(snapshot.get("conflict_port", 0))
 				)
 			_post_update_stale_reprobes_left -= 1
+			_post_update_retry_episode = episode_id
 			get_tree().create_timer(POST_UPDATE_STALE_REPROBE_SECONDS).timeout.connect(
-				_reprobe_after_update, CONNECT_ONE_SHOT
+				_reprobe_after_update.bind(episode_id), CONNECT_ONE_SHOT
 			)
 			return
 		if _post_update_reprobes_left > 0:
 			_post_update_reprobes_left -= 1
-			get_tree().create_timer(1.0).timeout.connect(_reprobe_after_update, CONNECT_ONE_SHOT)
+			_post_update_retry_episode = episode_id
+			get_tree().create_timer(1.0).timeout.connect(_reprobe_after_update.bind(episode_id), CONNECT_ONE_SHOT)
 		return
 	var version := str(snapshot.get("conflict_version", ""))
 	if not _update_may_replace(version):
@@ -1432,8 +1449,16 @@ func _update_may_replace(conflict_version: String) -> bool:
 	)
 
 
-func _reprobe_after_update() -> void:
+func _reprobe_after_update(episode_id: int) -> void:
+	if episode_id != _post_update_retry_episode:
+		return
+	_post_update_retry_episode = 0
 	if _post_update_replaced_version.is_empty() or _lifecycle == null or not _normal_start_released:
+		_publish_dock_status_snapshots()
+		return
+	var snapshot: Dictionary = _lifecycle.get_status_dict()
+	if int(snapshot.get("episode_id", 0)) != episode_id or str(snapshot.get("episode_state", "")) != "BLOCKED":
+		_publish_dock_status_snapshots()
 		return
 	_lifecycle.start_server()
 
@@ -1561,7 +1586,7 @@ static func _remove_tree(path: String) -> void:
 	DirAccess.remove_absolute(path)
 
 
-## Verify, stage, quiesce, swap, restart. Every check runs in this editor
+## Verify, stage, quiesce, then hand activation to an independent runner. Every check runs in this editor
 ## against the downloaded bytes; nothing outside the editor is executed. The
 ## live tree is touched only by the two renames inside `swap`, and only after
 ## the staged tree has been re-hashed against the signed manifest.
@@ -1629,31 +1654,31 @@ func install_downloaded_update(package: Dictionary) -> void:
 		"editor_nonce": Crypto.new().generate_random_bytes(16).hex_encode(),
 		"replace_owned_mismatches": false,
 	}
-	var swapped: Dictionary = UpdateInstaller.swap(
-		str(staged.get("stage_root", "")), LIVE_ADDON_ROOT, record
+	## Compile an independent script with no resource path. Loading this as a
+	## normal Script would let the filesystem scan replace our live runner.
+	var runner_script := GDScript.new()
+	runner_script.source_code = FileAccess.get_file_as_string(
+		"res://addons/godot_ai/utils/update_activation_runner.gd"
 	)
-	if not bool(swapped.get("ok", false)):
-		var refused := "update swap refused: %s" % str(swapped.get("error", ""))
-		if not FileAccess.file_exists(PLUGIN_CFG):
-			_fail_update(
-				"Update failed — repair required",
-				refused + "; the previous tree is not live: run `script/v4-release install` or restore the backup by hand",
-			)
-			return
+	if runner_script.source_code.is_empty() or runner_script.reload() != OK:
 		UpdateInstaller.discard_stage()
-		_fail_update("Update failed — previous version kept", refused)
-		## Quiescence already stopped the server and cleared the dispatcher;
-		## the old tree is still live, so rebuild the plugin from it.
+		_fail_update("Update cancelled safely", "could not compile the independent activation runner")
 		_reload_plugin_after_failed_update()
 		return
+	var runner = runner_script.new()
+	get_tree().root.add_child(runner)
+	if not runner.start({"stage_root": str(staged.get("stage_root", "")), "record": record}):
+		var refusal_reason := str(runner.refusal_reason)
+		runner.queue_free()
+		UpdateInstaller.discard_stage()
+		_fail_update("Update cancelled safely", refusal_reason)
+		_reload_plugin_after_failed_update()
+		return
+	## The runner now owns the lock. Teardown's cancellation signal must not
+	## release it before the deferred disable/drain/swap sequence completes.
 	_update_swapped = true
-	## The lock covered download, stage and swap. From here the marker itself
-	## refuses a second update until the restarted editor verifies the tree,
-	## and that editor cannot prove this process dead, so release it now.
-	UpdateInstaller.release_lock()
-	UpdateInstaller.persist_next_start_enabled(PLUGIN_CFG)
-	print("MCP | update to %s swapped in; restarting the editor" % to_version)
-	UpdateInstaller.request_restart.call_deferred()
+	## Return: no frame of this plugin may be suspended across source replacement.
+
 
 
 ## Name the activation phase in the dock and let it repaint before the

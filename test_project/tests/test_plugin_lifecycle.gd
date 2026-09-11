@@ -122,6 +122,14 @@ class EndpointActivationPlugin extends Plugin:
 		normal_starts += 1
 
 
+class HandoffPresentationPlugin extends Plugin:
+	func _enter_tree() -> void:
+		pass
+
+	func _exit_tree() -> void:
+		pass
+
+
 class EndpointJobs extends FakeClientJobs:
 	var lifecycle
 	var activation_seen := {}
@@ -482,6 +490,54 @@ func test_post_update_replaces_only_older_servers_of_our_major() -> void:
 	plugin._replace_server_left_by_update(blocked.merged({"conflict_version": "4.0.1"}))
 	plugin._replace_server_left_by_update(blocked.merged({"conflict_version": "4.0.1"}))
 	assert_eq(lifecycle.recover_calls, 3, "bounded by the replacement limit")
+	plugin._lifecycle = null
+	plugin.free()
+
+
+func test_post_update_handoff_retry_is_amber_only_while_scheduled() -> void:
+	var plugin := HandoffPresentationPlugin.new()
+	var tree := Engine.get_main_loop() as SceneTree
+	tree.root.add_child(plugin)
+	var manager := _manual_lifecycle()
+	plugin._lifecycle = manager
+	plugin._normal_start_released = true
+	plugin._post_update_replaced_version = "4.0.4"
+	plugin._post_update_reprobes_left = 1
+	var dock := Dock.new()
+	dock._build_ui()
+	plugin._dock = dock
+	manager.snapshot_changed.connect(plugin._on_lifecycle_snapshot_changed)
+	manager.start_server()
+	assert_false(plugin._lifecycle_snapshot_for_dock().get("handoff_retry_pending", false))
+	manager._episode["proof_pending_reason"] = "capability_pair"
+	manager._block("launch_gone", "HTTP port already claimed")
+	dock._update_status()
+	assert_true(plugin._post_update_retry_episode > 0)
+	assert_true(dock._lifecycle_snapshot.get("handoff_retry_pending", false))
+	assert_eq(dock._status_label.text, "Recovering after update…")
+	assert_eq(dock._status_icon.color, Dock.COLOR_AMBER)
+	assert_true(manager.is_connection_blocked(), "presentation cannot authorize transport")
+	assert_eq(manager.get_status_dict().episode_state, "BLOCKED")
+	assert_eq(manager.authority_snapshot().transport, {})
+	await tree.create_timer(1.1).timeout
+	assert_eq(plugin._post_update_retry_episode, 0, "the actual timer consumed its episode")
+	assert_eq(manager.get_status_dict().phase, "PROBE", "the timer really requested a fresh probe")
+	manager._episode["proof_pending_reason"] = "capability_pair"
+	manager._block("launch_gone", "HTTP port still claimed")
+	dock._update_status()
+	assert_false(dock._lifecycle_snapshot.get("handoff_retry_pending", false), "exhaustion is terminal")
+	assert_eq(dock._status_icon.color, Color.RED)
+	plugin._post_update_reprobes_left = 1
+	manager._block_without_effect("listener_tools_missing", "Install lsof or iproute2")
+	dock._update_status()
+	assert_false(dock._lifecycle_snapshot.get("handoff_retry_pending", false), "a genuine failure stays red even with a retry scheduled")
+	assert_eq(dock._status_icon.color, Color.RED)
+	manager.stop_server()
+	var stopped := manager.episode_snapshot()
+	await tree.create_timer(1.1).timeout
+	assert_eq(manager.episode_snapshot(), stopped, "Stop supersedes the pending retry")
+	plugin._dock = null
+	dock.free()
 	plugin._lifecycle = null
 	plugin.free()
 

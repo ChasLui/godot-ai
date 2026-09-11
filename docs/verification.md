@@ -92,6 +92,17 @@ Use the actual Git installation directory for a non-default installation.
 `bash` must resolve to Git's executable, not the Windows WSL launcher. These
 tools create disposable signing/TLS fixtures and exercise the CI shell helpers.
 
+Prepare and launch Windows fixtures under the same user context. Files created
+by a separate sandbox account can deny the editor's child Python process access
+to its launcher. If startup exits before publishing proof, inspect captured
+stderr and fixture ACLs before attributing the failure to the plugin.
+
+On Linux, listener ownership checks require `lsof` or `ss` (provided by
+`iproute2`). Normal desktop installations commonly include `ss`; minimal test
+containers may include neither. Install one before live verification, for
+example `sudo apt-get install lsof` on Debian/Ubuntu. Missing tools must produce
+an actionable failure, never a bypass of the process ownership checks.
+
 1. Run the same Ruff scope as CI — production, tests, the `script/` Python
    package, and the executable Python release/smoke scripts:
    ```bash
@@ -139,6 +150,31 @@ tools create disposable signing/TLS fixtures and exercise the CI shell helpers.
 8. Only commit when all of the above are green
 
 ## Verify lifecycle and updates throughout implementation
+
+Close each disposable editor when its test is finished. Preserve logs and
+receipts, inspect the final screenshot, then request a normal exit and verify
+that the exact process has stopped. Match both its project path and process
+creation identity before closing it. Discard only known smoke-test mutations;
+leave user editors and unsaved user work alone. Release test-owned client
+connections normally, and keep only editors needed for active checks running.
+After exit, remove disposable generated caches from the verified fixture paths.
+Keep source snapshots, logs, receipts, and the small evidence needed to explain
+failures; do not retain entire thumbnail/import caches as test evidence. Never
+clean a live fixture or a user's settings/cache directories.
+
+Full handler suites include deliberate error cases. Label their editor clearly
+and attribute console diagnostics to specific tests; passing assertions do not
+excuse errors from valid-input cases. Use a separate clean editor for the
+user-facing startup and update checks.
+
+For interactive pytest runs, pass `-o tmp_path_retention_policy=all` and copy
+the compact evidence before releasing the visual-review gate. The default
+retains only failed tests; passing assertions can otherwise delete the editor
+log even when visual review found a transient error worth investigating.
+
+Keep isolated settings and caches outside the Godot project, or create a
+`.gdignore` in their directory before the first editor launch. Otherwise Godot
+can import its own thumbnail cache and produce misleading scan/load timings.
 
 Run a visible Godot editor before and after each meaningful lifecycle or update
 change. Load real scenes and exercise handlers before testing recovery or an
