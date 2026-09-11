@@ -5,6 +5,41 @@ this file at the release's exact source commit, and its "What's Changed"
 section lists every merged pull request; this file keeps the part worth
 reading. Release engineering: [docs/releasing.md](docs/releasing.md).
 
+## 4.1.0 (2026-09-11)
+
+Plugin updates now activate inside the running editor, preserving open scenes,
+unsaved changes, selection, and undo history. Updating from published 4.0.4
+still restarts the editor once through its existing updater; later updates use
+the new in-editor path. Published 3.2.5 can migrate through the new update
+capsule without restarting the editor. Older AI clients may still need one
+relaunch after migration.
+[Compare v4.0.4...v4.1.0](https://github.com/hi-godot/godot-ai/compare/v4.0.4...v4.1.0).
+
+### Fixed
+
+- Fixed a native editor crash when an import runs while the Update confirmation
+  is open. Godot's shared progress dialog survives plugin replacement and can
+  be reused by the next filesystem scan.
+- Updates wait for filesystem scans before replacing and enabling scripts,
+  retain scripts needed by existing undo callbacks, and explain why an unsafe
+  activation was refused.
+- Startup and update recovery stay in a pending state until the server is
+  ready. Genuine failures retain their error state and diagnostics.
+- Windows process-inspection failures no longer masquerade as an exited
+  process. Server ownership checks retain the evidence needed for recovery.
+- Migration chooses an independent HTTP/WebSocket port pair. The dock's port
+  picker updates the effective pair, including migrated settings, and also
+  supports incompatible servers that cannot be reclaimed.
+- Backup scans skip linked child directories, and Linux startup explains when
+  required listener tools are missing.
+
+### Known issue
+
+- **Configure all** can report a client-configuration lock error when requests
+  overlap. Configure clients individually, waiting for each operation to finish,
+  and retry an affected client after the active operation completes. Tracked in
+  [#1047](https://github.com/hi-godot/godot-ai/issues/1047).
+
 ## 4.0.4 (2026-09-09)
 
 Updating with AI clients attached no longer means quitting and relaunching
